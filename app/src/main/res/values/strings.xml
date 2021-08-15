@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Movie Mania</string>
+    <string name="infinite">Infinite</string>
+    <string name="blackWidow">Black Widow</string>
+    <string name="suicideSquad">The Suicide Squad</string>
+    <string name="lastMercenary">The Last Mercenary</string>
+    <string name="infinite_release_date">Jun 10 2021</string>
+    <string name="blackWidow_release_date">Jul 07 2021</string>
+    <string name="suicideSquad_release_date">Jul 28 2021</string>
+    <string name="lastMercenary_release_date">Jul 30 2021</string>
+    <string name="infinite_rating">7.3</string>
+    <string name="blackWidow_rating">7.8</string>
+    <string name="suicideSquad_rating">8.1</string>
+    <string name="lastMercenary_rating">6.9</string>
+
+</resources>

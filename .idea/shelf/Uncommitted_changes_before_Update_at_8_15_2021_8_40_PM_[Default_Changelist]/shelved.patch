@@ -1,0 +1,2276 @@
+Index: ../.cirrus.yml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+># CIRRUS CONFIGURATION FILE\r\n# https://cirrus-ci.org/guide/writing-tasks/\r\n\r\n# YAML anchors used to share fields between tasks.\r\n# See https://confluence.atlassian.com/bitbucket/yaml-anchors-960154027.html\r\n\r\nwindows_shard_template: &WINDOWS_SHARD_TEMPLATE\r\n  only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'bin/**') || $CIRRUS_PR == ''\" # https://github.com/flutter/flutter/issues/41941\r\n  script:\r\n    - dart --enable-asserts ./dev/bots/test.dart\r\n\r\nmacos_shard_template: &MACOS_SHARD_TEMPLATE\r\n  only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'bin/**') || $CIRRUS_PR == ''\" # https://github.com/flutter/flutter/issues/41941\r\n  script:\r\n    - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976\r\n    - dart --enable-asserts ./dev/bots/test.dart\r\n\r\nfirebase_shard_template: &FIREBASE_SHARD_TEMPLATE\r\n  environment:\r\n    # Empirically, this shard runs in 20-25 minutes with just one CPU and 4G of RAM, as of\r\n    # October 2019. It does not seem to be sensitive to the number of CPUs or amount of RAM;\r\n    # doubling CPUs had no effect (mere seconds under 20 minutes), increasing RAM to 24G left it\r\n    # on the high end of the 20-25 minute range. (This makes sense, as it's just driving the\r\n    # Firebase test lab remotely.) Less than 4G of RAM made it go OOM.\r\n    CLOUDSDK_CORE_DISABLE_PROMPTS: 1\r\n    GCLOUD_FIREBASE_TESTLAB_KEY: ENCRYPTED[1c140257edc48f5578fa5a0e5038b84c8e53270c405efa5a8e35ea303a4e0d135853989f448f72136206de854d17fbec]\r\n  script:\r\n    - dart --enable-asserts ./dev/bots/test.dart\r\n\r\nuse_compute_credits: $CIRRUS_USER_COLLABORATOR == 'true'\r\n\r\nenvironment:\r\n  # For details about environment variables used in Cirrus, including how encrypted variables work,\r\n  # see https://cirrus-ci.org/guide/writing-tasks/#environment-variables\r\n  GCLOUD_SERVICE_ACCOUNT_KEY: ENCRYPTED[f12abe60f5045d619ef4c79b83dd1e0722a0b0b13dbea95fbe334e2db7fffbcd841a5a92da8824848b539a19afe0c9fb]\r\n  # We change Flutter's directory to include a space in its name (see $CIRRUS_WORKING_DIR) so that\r\n  # we constantly test path names with spaces in them. The FLUTTER_SDK_PATH_WITH_SPACE variable must\r\n  # therefore have a space in it.\r\n  FLUTTER_SDK_PATH_WITH_SPACE: \"flutter sdk\"\r\n  # We force BOT to true so that all our tools know we're in a CI environment. This avoids any\r\n  # dependency on precisely how Cirrus is detected by our tools.\r\n  BOT: \"true\"\r\n  # Unsetting CIRRUS_CHANGE_MESSAGE and CIRRUS_COMMIT_MESSAGE as they might include non-ASCII\r\n  # characters which makes Gradle crash. See: https://github.com/flutter/flutter/issues/24935\r\n  # TODO(amirha): remove once we've migrated to newer Gradle\r\n  CIRRUS_CHANGE_MESSAGE: \"\"\r\n  CIRRUS_COMMIT_MESSAGE: \"\"\r\n\r\n# LINUX SHARDS\r\ntask:\r\n  container:\r\n    # https://cirrus-ci.org/guide/docker-builder-vm/#dockerfile-as-a-ci-environment\r\n    dockerfile: \"dev/ci/docker_linux/Dockerfile\"\r\n    cpu: $CPU\r\n    memory: $MEMORY\r\n    use_in_memory_disk: $USE_IN_MEMORY_DISK\r\n  environment:\r\n    # We shrink our default resource requirement as much as possible because that way we are more\r\n    # likely to get scheduled. We require 4G of RAM because most of the shards (all but one as of\r\n    # October 2019) just get OOM-killed with less. Some shards may need more. When increasing the\r\n    # requirements for select shards, please leave a comment on those shards saying when you\r\n    # increased the requirements, what numbers you tried, and what the results were.\r\n    CPU: 1 # 0.1-8 without compute credits, 0.1-30 with (yes, you can go fractional)\r\n    MEMORY: 4G # 256M-24G without compute credits, 256M-90G with\r\n    CIRRUS_WORKING_DIR: \"/tmp/$FLUTTER_SDK_PATH_WITH_SPACE\"\r\n    CIRRUS_DOCKER_CONTEXT: \"dev/\"\r\n    PATH: \"$CIRRUS_WORKING_DIR/bin:$CIRRUS_WORKING_DIR/bin/cache/dart-sdk/bin:$PATH\"\r\n    ANDROID_SDK_ROOT: \"/opt/android_sdk\"\r\n    SHOULD_UPDATE_PACKAGES: 'TRUE' # can be overridden at the task level\r\n    USE_IN_MEMORY_DISK: false\r\n  pub_cache:\r\n    folder: $HOME/.pub-cache\r\n    fingerprint_script: echo $OS; grep -r --include=pubspec.yaml 'PUBSPEC CHECKSUM' \"$CIRRUS_WORKING_DIR\"\r\n    reupload_on_changes: false\r\n  flutter_pkg_cache:\r\n    folder: bin/cache/pkg\r\n    fingerprint_script: echo $OS; cat bin/internal/*.version\r\n    reupload_on_changes: false\r\n  artifacts_cache:\r\n    folder: bin/cache/artifacts\r\n    fingerprint_script: echo $OS; cat bin/internal/*.version\r\n    reupload_on_changes: false\r\n  setup_script:\r\n    - date\r\n    - git clean -xffd --exclude=bin/cache/\r\n    - git fetch origin\r\n    - git fetch origin master # To set FETCH_HEAD, so that \"git merge-base\" works.\r\n    - flutter config --no-analytics\r\n    - if [ \"$SHOULD_UPDATE_PACKAGES\" == TRUE ]; then flutter update-packages; fi\r\n    - flutter doctor -v\r\n    - ./dev/bots/accept_android_sdk_licenses.sh\r\n    - date\r\n  on_failure:\r\n    failure_script:\r\n      - date\r\n      - which flutter\r\n  matrix:\r\n    - name: analyze-linux # linux-only\r\n      only_if: \"$CIRRUS_PR != ''\"\r\n      environment:\r\n        # Empirically, the analyze-linux shard runs surprisingly fast (under 15 minutes) with just 1\r\n        # CPU.  We noticed OOM failures with 6GB 4/2020, so we increased the memory.\r\n        CPU: 1\r\n        MEMORY: 8G\r\n      script:\r\n        - dart --enable-asserts ./dev/bots/analyze.dart\r\n\r\n    - name: framework_tests-widgets-linux\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter/**', 'packages/flutter_test/**', 'packages/flutter_tools/lib/src/test/**', 'bin/**') && $CIRRUS_PR != ''\"\r\n      environment:\r\n        # We use 3 CPUs because that's the minimum required to get framework_tests-widgets-linux\r\n        # running fast enough that it is not the long pole, as of October 2019.\r\n        CPU: 3\r\n        GOLD_SERVICE_ACCOUNT: ENCRYPTED[3afeea5ac7201151c3d0dc9648862f0462b5e4f55dc600ca8b692319622f7c3eda3d577b1b16cc2ef0311b7314c1c095]\r\n      script:\r\n        - dart --enable-asserts ./dev/bots/test.dart\r\n\r\n    - name: framework_tests-libraries-linux\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter/**', 'packages/flutter_test/**', 'packages/flutter_tools/lib/src/test/**', 'bin/**') && $CIRRUS_PR != ''\"\r\n      environment:\r\n        # We use 3 CPUs because that's the minimum required to get the\r\n        # framework_tests-libraries-linux shard running fast enough that it is not the long pole, as\r\n        # of October 2019.\r\n        CPU: 3\r\n        GOLD_SERVICE_ACCOUNT: ENCRYPTED[3afeea5ac7201151c3d0dc9648862f0462b5e4f55dc600ca8b692319622f7c3eda3d577b1b16cc2ef0311b7314c1c095]\r\n      script:\r\n        - dart --enable-asserts ./dev/bots/test.dart\r\n\r\n    - name: framework_tests-misc-linux\r\n      # this includes the tests for directories in dev/\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter/**', 'packages/flutter_goldens/**', 'packages/flutter_test/**', 'packages/flutter_tools/lib/src/test/**', 'bin/**') && $CIRRUS_PR != ''\"\r\n      environment:\r\n        # We use 3 CPUs because that's the minimum required to get framework_tests-misc-linux\r\n        # running fast enough that it is not the long pole, as of October 2019.\r\n        CPU: 3\r\n      script:\r\n        - dart --enable-asserts ./dev/bots/test.dart\r\n\r\n    - name: tool_tests-general-linux\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter_tools/**', 'bin/**') && $CIRRUS_PR != ''\"\r\n      environment:\r\n        # As of November 2019, the tool_tests-general-linux shard got faster with more CPUs up to 4\r\n        # CPUs, and needed at least 10G of RAM to not run out of memory.\r\n        CPU: 4\r\n        MEMORY: 10G\r\n        SHOULD_UPDATE_PACKAGES: \"FALSE\"\r\n      script:\r\n        - (cd packages/flutter_tools; pub get)\r\n        - (cd packages/flutter_tools/test/data/asset_test/main; pub get)\r\n        - (cd packages/flutter_tools/test/data/asset_test/font; pub get)\r\n        - (cd dev/bots; pub get)\r\n        - dart --enable-asserts ./dev/bots/test.dart\r\n\r\n    - name: tool_tests-commands-linux\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter_tools/**', 'bin/**') && $CIRRUS_PR != ''\"\r\n      environment:\r\n        # As of October 2019, the tool_tests-commands-linux shard got faster with more CPUs up to 6\r\n        # CPUs, and needed at least 8G of RAM to not run out of memory.\r\n        # Increased to 10GB on 19th Nov 2019 due to significant number of OOMKilled failures on PR builds.\r\n        CPU: 6\r\n        MEMORY: 10G\r\n        SHOULD_UPDATE_PACKAGES: \"FALSE\"\r\n      script:\r\n        - (cd packages/flutter_tools; pub get)\r\n        - (cd dev/bots; pub get)\r\n        - dart --enable-asserts ./dev/bots/test.dart\r\n\r\n    - name: tool_tests-integration-linux\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter_tools/**', 'bin/**') && $CIRRUS_PR != ''\"\r\n      environment:\r\n        # As of October 2019, the tool_tests-integration-linux shard got faster with more CPUs up to\r\n        # 6 CPUs, and needed at least 8G of RAM to not run out of memory.\r\n        CPU: 6\r\n        MEMORY: 8G\r\n        CHROME_NO_SANDBOX: true\r\n        SHOULD_UPDATE_PACKAGES: \"FALSE\"\r\n      script:\r\n        - (cd packages/flutter_tools; pub get)\r\n        - (cd dev/bots; pub get)\r\n        - (cd dev/tools; pub get)\r\n        - dart --enable-asserts ./dev/bots/test.dart\r\n\r\n    - name: tool_coverage-linux # linux-only\r\n      skip: true # Skip while moving between Cirrus and LUCI\r\n      only_if: \"$CIRRUS_BRANCH == 'master'\"\r\n      environment:\r\n        # As of February 2020, the tool_coverage-linux shard needed at least 24G of RAM to run without\r\n        # getting OOM-killed, and even 8 CPUs took 25 minutes.\r\n        CPU: 8\r\n        MEMORY: 24G\r\n        CODECOV_TOKEN: ENCRYPTED[7c76a7f8c9264f3b7f3fd63fcf186f93c62c4dfe43ec288861c2f506d456681032b89efe7b7a139c82156350ca2c752c]\r\n        SHOULD_UPDATE_PACKAGES: \"FALSE\"\r\n      script:\r\n        - (cd packages/flutter_tools; pub get)\r\n        - (cd packages/flutter_tools/test/data/asset_test/main; pub get)\r\n        - (cd packages/flutter_tools/test/data/asset_test/font; pub get)\r\n        - (cd dev/bots; pub get)\r\n        - dart --enable-asserts ./dev/bots/test.dart\r\n        - bash <(curl -s https://codecov.io/bash) -c -f packages/flutter_tools/coverage/lcov.info -F flutter_tool\r\n\r\n    - name: web_integration_tests\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter/**', 'packages/flutter_test/**', 'packages/flutter_tools/**', 'packages/flutter_web_plugins/**', 'bin/**') && $CIRRUS_PR != ''\"\r\n      environment:\r\n        # As of October 2019, the Web shards needed more than 6G of RAM.\r\n        CPU: 2\r\n        MEMORY: 8G\r\n        CHROME_NO_SANDBOX: true\r\n        GOLD_SERVICE_ACCOUNT: ENCRYPTED[3afeea5ac7201151c3d0dc9648862f0462b5e4f55dc600ca8b692319622f7c3eda3d577b1b16cc2ef0311b7314c1c095]\r\n      script:\r\n        - dart --enable-asserts ./dev/bots/test.dart\r\n\r\n    - name: docs-linux # linux-only\r\n      # TODO(fujino): Make this pre-submit only once #64212 is fixed\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter/**', 'packages/flutter_test/**', 'packages/flutter_drive/**', 'packages/flutter_localizations/**', 'bin/**') || $CIRRUS_PR == ''\"\r\n      environment:\r\n        # TODO(tvolkert): optimize CPU and MEMORY settings once #60646 is resolved.\r\n        CPU: 4\r\n        MEMORY: 8G\r\n        # For uploading master docs to Firebase master branch staging site\r\n        FIREBASE_MASTER_TOKEN: ENCRYPTED[eb768d18798fdc5abfe09b224e1724c4d82831d715ccf90df2c79d618c317216cbd99493278361f6fe7948b409b603f0]\r\n        # For uploading stable docs to Firebase public live site\r\n        FIREBASE_PUBLIC_TOKEN: ENCRYPTED[37e8b82f167864cae9a3f4d2cf3f37dea331d9375c295327c45de524f6c588fa6f6d63e5784f10f6d43ce29689f36c92]\r\n      script:\r\n        - ./dev/bots/docs.sh\r\n\r\n    - name: customer_testing-linux\r\n      only_if: \"$CIRRUS_PR != ''\"\r\n      # environment:\r\n        # Empirically, this shard runs fine at 1 CPU and 4G RAM as of October 2019. We will probably\r\n        # want to grow this container when we invite people to add their tests in large numbers.\r\n      script:\r\n        - rm -rf bin/cache/pkg/tests\r\n        - git clone https://github.com/flutter/tests.git bin/cache/pkg/tests\r\n        - (cd bin/cache/pkg/tests; git checkout f1c35d57db5f0c1dd31ae3e0f73a18891343cd60)\r\n        - dart --enable-asserts dev/customer_testing/run_tests.dart --skip-on-fetch-failure --skip-template bin/cache/pkg/tests/registry/*.test\r\n\r\n    # firebase_test_lab_tests are linux-only\r\n    - name: firebase_test_lab_tests-0-linux\r\n      <<: *FIREBASE_SHARD_TEMPLATE\r\n\r\n    - name: firebase_test_lab_tests-1-linux\r\n      <<: *FIREBASE_SHARD_TEMPLATE\r\n\r\n    - name: firebase_test_lab_tests-2_last-linux\r\n      <<: *FIREBASE_SHARD_TEMPLATE\r\n\r\n    - name: web_smoke_test\r\n      only_if: \"changesInclude('.cirrus.yml', 'examples/hello_world/**' ,'dev/**', 'packages/flutter/**', 'packages/flutter_test/**', 'packages/flutter_tools/lib/src/test/**', 'packages/flutter_web_plugins/**', 'bin/**') || $CIRRUS_PR == ''\"\r\n      environment:\r\n        # Tests Hello World with Flutter Web Engine using Flutter Driver. Should not need more resources.\r\n        CPU: 2\r\n        MEMORY: 2G\r\n        CHROME_NO_SANDBOX: true\r\n      script:\r\n        - flutter config --enable-web\r\n        - git clone https://github.com/flutter/web_installers.git\r\n        - cd web_installers/packages/web_drivers/\r\n        - pub get\r\n        - dart lib/web_driver_installer.dart &\r\n        - sleep 20\r\n        - chromedriver/chromedriver --port=4444 &\r\n        - sleep 5\r\n        - cd ../../../examples/hello_world/\r\n        - flutter drive --target=test_driver/smoke_web_engine.dart -d web-server --profile --browser-name=chrome\r\n\r\n    - name: deploy_gallery-linux # linux- and macos- only\r\n      # Do not add more tasks here. Nothing is currently deployed from master branch, so it is safe to run\r\n      # even if a test has failed. The behavior of failing dependencies is non-ideal for infra health.\r\n      # See also: https://github.com/flutter/flutter/pull/49454\r\n      depends_on:\r\n        - analyze-linux\r\n      environment:\r\n        # As of October 2019, 1 CPU and 4G of RAM let deploy_gallery-linux finish in about 15\r\n        # minutes, once it got started.\r\n        GOOGLE_DEVELOPER_SERVICE_ACCOUNT_ACTOR_FASTLANE: ENCRYPTED[d9ac1462c3c556fc2f8165c9d5566a16497d8ebc38a50357f7f3abf136b7f83e1d1d76dde36fee356cb0f9ebf7a89346]\r\n        ANDROID_GALLERY_UPLOAD_KEY: ENCRYPTED[0f2aca35f05b26add5d9edea2a7449341269a2b7e22d5c667f876996e2e8bc44ff1369431ebf73b7c5581fd95d0e5902]\r\n      script:\r\n        - ./dev/bots/deploy_gallery.sh\r\n\r\n# WINDOWS SHARDS\r\ntask:\r\n  windows_container:\r\n    image: cirrusci/android-sdk:30-windowsservercore-2019\r\n    os_version: 2019\r\n    cpu: $CPU\r\n    memory: $MEMORY\r\n  environment:\r\n    CPU: 1 # 1-8 without compute credits, 1-30 with\r\n    MEMORY: 2G # 256M-24G without compute credits, 256M-90G with\r\n    CIRRUS_WORKING_DIR: \"C:\\\\Windows\\\\Temp\\\\$FLUTTER_SDK_PATH_WITH_SPACE\"\r\n    PATH: \"$CIRRUS_WORKING_DIR/bin;$CIRRUS_WORKING_DIR/bin/cache/dart-sdk/bin;$PATH\"\r\n    SHOULD_UPDATE_PACKAGES: \"TRUE\"\r\n  pub_cache:\r\n    folder: $APPDATA\\Pub\\Cache\r\n    fingerprint_script:\r\n      - ps: $Environment:OS; Get-ChildItem -Path \"$Environment:CIRRUS_WORKING_DIR\" pubspec.yaml -Recurse | Select-String -Pattern \"PUBSPEC CHECKSUM\" -SimpleMatch\r\n    reupload_on_changes: false\r\n  flutter_pkg_cache:\r\n    folder: bin\\cache\\pkg\r\n    fingerprint_script: echo %OS% & type bin\\internal\\*.version\r\n    reupload_on_changes: false\r\n  artifacts_cache:\r\n    folder: bin\\cache\\artifacts\r\n    fingerprint_script: echo %OS% & type bin\\internal\\*.version\r\n    reupload_on_changes: false\r\n  setup_script:\r\n    - git clean -xffd --exclude=bin/cache/ # git wants forward slash path separators, even on Windows.\r\n    - git fetch origin\r\n    - git fetch origin master # To set FETCH_HEAD, so that \"git merge-base\" works.\r\n    - flutter config --no-analytics\r\n    - flutter doctor -v\r\n    - CMD /C IF \"%SHOULD_UPDATE_PACKAGES%\" EQU \"TRUE\" flutter update-packages\r\n    - git fetch origin master\r\n  matrix:\r\n    - name: hostonly_devicelab_tests-0-windows\r\n      << : *WINDOWS_SHARD_TEMPLATE\r\n      environment:\r\n        # As of December 2019, the hostonly_devicelab_tests-0-windows shard needs at least 6G RAM to\r\n        # succeed. The shard got faster with more CPUs up to 6 CPUs and more RAM up to 8 GB\r\n        # (running in about 30 minutes).\r\n        CPU: 6\r\n        MEMORY: 8G\r\n\r\n    - name: hostonly_devicelab_tests-1-windows\r\n      << : *WINDOWS_SHARD_TEMPLATE\r\n      environment:\r\n        # As of December 2019, the hostonly_devicelab_tests-1-windows shard requires 4 GB RAM to\r\n        # succeed. The optimal configuration was 4 CPUs and 6 GB RAM, running in ~26 minutes.\r\n        # Less CPU or RAM ran slower, and more CPU or RAM yielded no extra gain.\r\n        CPU: 4\r\n        MEMORY: 6G\r\n\r\n    - name: hostonly_devicelab_tests-2-windows\r\n      << : *WINDOWS_SHARD_TEMPLATE\r\n      environment:\r\n        # As of December 2019, the hostonly_devicelab_tests-2-windows shard required 2 GB RAM to\r\n        # succeed. The optimal configuration was 4 CPUs and 8 GB RAM, running in ~33 minutes.\r\n        # Less CPU or RAM ran slower, and more CPU or RAM yielded no extra gain.\r\n        CPU: 4\r\n        MEMORY: 8G\r\n\r\n    - name: hostonly_devicelab_tests-3_last-windows\r\n      << : *WINDOWS_SHARD_TEMPLATE\r\n      environment:\r\n        # As of December 2019, the hostonly_devicelab_tests-3_last-windows shard required 6 GB RAM\r\n        # to succeed. The optimal configuration was 4 CPUs and 6 GB RAM, running in ~43 minutes.\r\n        # Less CPU or RAM ran slower, and more CPU or RAM yielded no extra gain.\r\n        CPU: 4\r\n        MEMORY: 6G\r\n\r\n    - name: customer_testing-windows\r\n      environment:\r\n        # As of December 2019, the customer_testing-windows shard got faster with more CPUs up to 4\r\n        # CPUs (which requires >=4G RAM), and needed at least 2G of RAM to not run out of memory.\r\n        CPU: 4\r\n        MEMORY: 4G\r\n      script:\r\n        - CMD /S /C \"IF EXIST \"bin\\cache\\pkg\\tests\\\" RMDIR /S /Q bin\\cache\\pkg\\tests\"\r\n        - git clone https://github.com/flutter/tests.git bin\\cache\\pkg\\tests\r\n        - cd bin\\cache\\pkg\\tests\r\n        - git checkout f1c35d57db5f0c1dd31ae3e0f73a18891343cd60\r\n        - cd ..\\..\\..\\..\r\n        - dart --enable-asserts dev\\customer_testing\\run_tests.dart --skip-on-fetch-failure --skip-template bin/cache/pkg/tests/registry/*.test\r\n\r\n# MACOS SHARDS\r\n# Mac doesn't use caches because they apparently take longer to populate and save\r\n# than just fetching the data in the first place.\r\ntask:\r\n  osx_instance:\r\n    image: catalina-xcode-12.0-flutter # see https://cirrus-ci.org/guide/macOS/ for list of images (we should update regularly)\r\n    # cpu is always 2\r\n    # memory is always 8G\r\n  environment:\r\n    CIRRUS_WORKING_DIR: \"/tmp/$FLUTTER_SDK_PATH_WITH_SPACE\"\r\n    FLUTTER_FRAMEWORK_DIR: \"$CIRRUS_WORKING_DIR/bin/cache/artifacts/engine/ios/\"\r\n    PATH: \"$CIRRUS_WORKING_DIR/bin:$CIRRUS_WORKING_DIR/bin/cache/dart-sdk/bin:$PATH\"\r\n    COCOAPODS_DISABLE_STATS: true\r\n    CPU: 2\r\n    MEMORY: 8G\r\n    SHOULD_UPDATE_PACKAGES: 'TRUE'\r\n  setup_script:\r\n    - date\r\n    - which flutter\r\n    - bundle --version\r\n    - bundle config set system 'true'\r\n    - sudo bundle install --gemfile=dev/ci/mac/Gemfile\r\n    - git clean -xffd --exclude=bin/cache/\r\n    - git fetch origin\r\n    - git fetch origin master # To set FETCH_HEAD, so that \"git merge-base\" works.\r\n    - flutter config --no-analytics\r\n    - if [ \"$SHOULD_UPDATE_PACKAGES\" == TRUE ]; then flutter update-packages; fi\r\n    - flutter doctor -v\r\n    - date\r\n    - which flutter\r\n  on_failure:\r\n    failure_script:\r\n      - date\r\n      - which flutter\r\n  matrix:\r\n    - name: framework_tests-widgets-macos\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter/**', 'packages/flutter_test/**', 'packages/flutter_tools/lib/src/test/**', 'bin/**') || $CIRRUS_PR == ''\"\r\n      environment:\r\n        GOLDCTL: \"$CIRRUS_WORKING_DIR/depot_tools/goldctl\"\r\n        GOLD_SERVICE_ACCOUNT: ENCRYPTED[3afeea5ac7201151c3d0dc9648862f0462b5e4f55dc600ca8b692319622f7c3eda3d577b1b16cc2ef0311b7314c1c095]\r\n      script:\r\n        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976\r\n        - ./dev/bots/download_goldctl.sh\r\n        - dart --enable-asserts dev/bots/test.dart\r\n\r\n    - name: framework_tests-libraries-macos\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter/**', 'packages/flutter_test/**', 'packages/flutter_tools/lib/src/test/**', 'bin/**') || $CIRRUS_PR == ''\"\r\n      environment:\r\n        GOLDCTL: \"$CIRRUS_WORKING_DIR/depot_tools/goldctl\"\r\n        GOLD_SERVICE_ACCOUNT: ENCRYPTED[3afeea5ac7201151c3d0dc9648862f0462b5e4f55dc600ca8b692319622f7c3eda3d577b1b16cc2ef0311b7314c1c095]\r\n      script:\r\n        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976\r\n        - ./dev/bots/download_goldctl.sh\r\n        - dart --enable-asserts dev/bots/test.dart\r\n\r\n    - name: framework_tests-misc-macos\r\n      # this includes the tests for directories in dev/\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter/**', 'packages/flutter_goldens/**', 'packages/flutter_goldens_client/**', 'packages/flutter_test/**', 'packages/flutter_tools/lib/src/test/**', 'bin/**') || $CIRRUS_PR == ''\"\r\n      script:\r\n        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976\r\n        - dart --enable-asserts dev/bots/test.dart\r\n\r\n    - name: tool_tests-general-macos\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter_tools/**', 'bin/**') || $CIRRUS_PR == ''\"\r\n      environment:\r\n        SHOULD_UPDATE_PACKAGES: 'FALSE'\r\n      script:\r\n        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976\r\n        - (cd packages/flutter_tools; pub get)\r\n        - (cd packages/flutter_tools/test/data/asset_test/main; pub get)\r\n        - (cd packages/flutter_tools/test/data/asset_test/font; pub get)\r\n        - (cd dev/bots; pub get)\r\n        - dart --enable-asserts ./dev/bots/test.dart\r\n\r\n    - name: tool_tests-commands-macos\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter_tools/**', 'bin/**') || $CIRRUS_PR == ''\"\r\n      environment:\r\n        SHOULD_UPDATE_PACKAGES: 'FALSE'\r\n      script:\r\n        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976\r\n        - (cd packages/flutter_tools; pub get)\r\n        - (cd dev/bots; pub get)\r\n        - dart --enable-asserts ./dev/bots/test.dart\r\n\r\n    - name: tool_tests-integration-macos\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter_tools/**', 'bin/**') || $CIRRUS_PR == ''\"\r\n      environment:\r\n        SHOULD_UPDATE_PACKAGES: 'FALSE'\r\n      script:\r\n        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976\r\n        - (cd packages/flutter_tools; pub get)\r\n        - (cd dev/bots; pub get)\r\n        - (cd dev/tools; pub get)\r\n        - dart --enable-asserts ./dev/bots/test.dart\r\n\r\n    # TODO(ianh): Enable Web tests on macOS.\r\n\r\n    - name: build_tests-0-macos\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'bin/**') || $CIRRUS_PR == ''\" # https://github.com/flutter/flutter/issues/41940\r\n      script:\r\n        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976\r\n        - dart --enable-asserts ./dev/bots/test.dart\r\n\r\n    - name: build_tests-1_last-macos\r\n      only_if: \"changesInclude('.cirrus.yml', 'dev/**', 'bin/**') || $CIRRUS_PR == ''\" # https://github.com/flutter/flutter/issues/41940\r\n      script:\r\n        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976\r\n        - dart --enable-asserts ./dev/bots/test.dart\r\n\r\n    - name: hostonly_devicelab_tests-0-macos\r\n      << : *MACOS_SHARD_TEMPLATE\r\n\r\n    - name: hostonly_devicelab_tests-1-macos\r\n      << : *MACOS_SHARD_TEMPLATE\r\n\r\n    - name: hostonly_devicelab_tests-2-macos\r\n      << : *MACOS_SHARD_TEMPLATE\r\n\r\n    - name: hostonly_devicelab_tests-3_last-macos\r\n      << : *MACOS_SHARD_TEMPLATE\r\n\r\n    - name: customer_testing-macos\r\n      script:\r\n        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976\r\n        - rm -rf bin/cache/pkg/tests\r\n        - git clone https://github.com/flutter/tests.git bin/cache/pkg/tests\r\n        - (cd bin/cache/pkg/tests; git checkout f1c35d57db5f0c1dd31ae3e0f73a18891343cd60)\r\n        - dart --enable-asserts dev/customer_testing/run_tests.dart --skip-on-fetch-failure --skip-template bin/cache/pkg/tests/registry/*.test\r\n\r\n    - name: deploy_gallery-macos # linux- and macos- only\r\n      # Do not add more tasks here. Nothing is currently deployed from master branch, so it is safe to run\r\n      # even if a test has failed. The behavior of failing dependencies is non-ideal for infra health.\r\n      # See also: https://github.com/flutter/flutter/pull/49454\r\n      depends_on:\r\n        - analyze-linux\r\n      environment:\r\n        # Apple Fastlane password.\r\n        FASTLANE_PASSWORD: ENCRYPTED[4b1f0b8d52874e9de965acd46c79743f3b81f3a513614179b9be7cf53dc8258753e257bdadb11a298ee455259df21865]\r\n        # Private repo for publishing certificates.\r\n        PUBLISHING_MATCH_CERTIFICATE_REPO: ENCRYPTED[3c0e78877d933fc80107aa6f3790fd1cf927250b852d6cb53202be696b4903ed8ca839b809626aaf18050bf7e436fab7]\r\n        PUBLISHING_MATCH_REPO_TOKEN: ENCRYPTED[3d1230b744c6ed6c788a91bec741b769401dbcd426b18f9af8080bfeefdfc21913ca4047980c5b5b7ce823f12e7b6b19]\r\n        # Apple Certificates Match Passphrase\r\n        MATCH_PASSWORD: ENCRYPTED[db07f252234397090e3ec59152d9ec1831f5ecd0ef97d247b1dca757bbb9ef9b7c832a39bce2caf1949ccdf097e59a73]\r\n      script:\r\n        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976\r\n        - ./dev/bots/deploy_gallery.sh\r\n\r\n    - name: verify_binaries_codesigned-macos # macos-only\r\n      # TODO(fujino): remove this `only_if` after https://github.com/flutter/flutter/issues/44372\r\n      # Only run pre/post submit for release branches\r\n      only_if: \"$CIRRUS_BASE_BRANCH == 'dev' || $CIRRUS_BRANCH == 'dev' || $CIRRUS_BASE_BRANCH == 'beta' || $CIRRUS_BRANCH == 'beta' || $CIRRUS_BASE_BRANCH == 'stable' || $CIRRUS_BRANCH == 'stable'\"\r\n      depends_on:\r\n        - analyze-linux\r\n      script:\r\n        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976\r\n        - dart --enable-asserts ./dev/bots/codesign.dart\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../.cirrus.yml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../.cirrus.yml	(date 1618595621099)
+@@ -4,28 +4,6 @@
+ # YAML anchors used to share fields between tasks.
+ # See https://confluence.atlassian.com/bitbucket/yaml-anchors-960154027.html
+ 
+-windows_shard_template: &WINDOWS_SHARD_TEMPLATE
+-  only_if: "changesInclude('.cirrus.yml', 'dev/**', 'bin/**') || $CIRRUS_PR == ''" # https://github.com/flutter/flutter/issues/41941
+-  script:
+-    - dart --enable-asserts ./dev/bots/test.dart
+-
+-macos_shard_template: &MACOS_SHARD_TEMPLATE
+-  only_if: "changesInclude('.cirrus.yml', 'dev/**', 'bin/**') || $CIRRUS_PR == ''" # https://github.com/flutter/flutter/issues/41941
+-  script:
+-    - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976
+-    - dart --enable-asserts ./dev/bots/test.dart
+-
+-firebase_shard_template: &FIREBASE_SHARD_TEMPLATE
+-  environment:
+-    # Empirically, this shard runs in 20-25 minutes with just one CPU and 4G of RAM, as of
+-    # October 2019. It does not seem to be sensitive to the number of CPUs or amount of RAM;
+-    # doubling CPUs had no effect (mere seconds under 20 minutes), increasing RAM to 24G left it
+-    # on the high end of the 20-25 minute range. (This makes sense, as it's just driving the
+-    # Firebase test lab remotely.) Less than 4G of RAM made it go OOM.
+-    CLOUDSDK_CORE_DISABLE_PROMPTS: 1
+-    GCLOUD_FIREBASE_TESTLAB_KEY: ENCRYPTED[1c140257edc48f5578fa5a0e5038b84c8e53270c405efa5a8e35ea303a4e0d135853989f448f72136206de854d17fbec]
+-  script:
+-    - dart --enable-asserts ./dev/bots/test.dart
+ 
+ use_compute_credits: $CIRRUS_USER_COLLABORATOR == 'true'
+ 
+@@ -111,7 +89,6 @@
+         # We use 3 CPUs because that's the minimum required to get framework_tests-widgets-linux
+         # running fast enough that it is not the long pole, as of October 2019.
+         CPU: 3
+-        GOLD_SERVICE_ACCOUNT: ENCRYPTED[3afeea5ac7201151c3d0dc9648862f0462b5e4f55dc600ca8b692319622f7c3eda3d577b1b16cc2ef0311b7314c1c095]
+       script:
+         - dart --enable-asserts ./dev/bots/test.dart
+ 
+@@ -122,7 +99,6 @@
+         # framework_tests-libraries-linux shard running fast enough that it is not the long pole, as
+         # of October 2019.
+         CPU: 3
+-        GOLD_SERVICE_ACCOUNT: ENCRYPTED[3afeea5ac7201151c3d0dc9648862f0462b5e4f55dc600ca8b692319622f7c3eda3d577b1b16cc2ef0311b7314c1c095]
+       script:
+         - dart --enable-asserts ./dev/bots/test.dart
+ 
+@@ -164,39 +140,6 @@
+         - (cd packages/flutter_tools; pub get)
+         - (cd dev/bots; pub get)
+         - dart --enable-asserts ./dev/bots/test.dart
+-
+-    - name: tool_tests-integration-linux
+-      only_if: "changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter_tools/**', 'bin/**') && $CIRRUS_PR != ''"
+-      environment:
+-        # As of October 2019, the tool_tests-integration-linux shard got faster with more CPUs up to
+-        # 6 CPUs, and needed at least 8G of RAM to not run out of memory.
+-        CPU: 6
+-        MEMORY: 8G
+-        CHROME_NO_SANDBOX: true
+-        SHOULD_UPDATE_PACKAGES: "FALSE"
+-      script:
+-        - (cd packages/flutter_tools; pub get)
+-        - (cd dev/bots; pub get)
+-        - (cd dev/tools; pub get)
+-        - dart --enable-asserts ./dev/bots/test.dart
+-
+-    - name: tool_coverage-linux # linux-only
+-      skip: true # Skip while moving between Cirrus and LUCI
+-      only_if: "$CIRRUS_BRANCH == 'master'"
+-      environment:
+-        # As of February 2020, the tool_coverage-linux shard needed at least 24G of RAM to run without
+-        # getting OOM-killed, and even 8 CPUs took 25 minutes.
+-        CPU: 8
+-        MEMORY: 24G
+-        CODECOV_TOKEN: ENCRYPTED[7c76a7f8c9264f3b7f3fd63fcf186f93c62c4dfe43ec288861c2f506d456681032b89efe7b7a139c82156350ca2c752c]
+-        SHOULD_UPDATE_PACKAGES: "FALSE"
+-      script:
+-        - (cd packages/flutter_tools; pub get)
+-        - (cd packages/flutter_tools/test/data/asset_test/main; pub get)
+-        - (cd packages/flutter_tools/test/data/asset_test/font; pub get)
+-        - (cd dev/bots; pub get)
+-        - dart --enable-asserts ./dev/bots/test.dart
+-        - bash <(curl -s https://codecov.io/bash) -c -f packages/flutter_tools/coverage/lcov.info -F flutter_tool
+ 
+     - name: web_integration_tests
+       only_if: "changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter/**', 'packages/flutter_test/**', 'packages/flutter_tools/**', 'packages/flutter_web_plugins/**', 'bin/**') && $CIRRUS_PR != ''"
+@@ -205,15 +148,13 @@
+         CPU: 2
+         MEMORY: 8G
+         CHROME_NO_SANDBOX: true
+-        GOLD_SERVICE_ACCOUNT: ENCRYPTED[3afeea5ac7201151c3d0dc9648862f0462b5e4f55dc600ca8b692319622f7c3eda3d577b1b16cc2ef0311b7314c1c095]
+       script:
+         - dart --enable-asserts ./dev/bots/test.dart
+ 
+     - name: docs-linux # linux-only
+-      # TODO(fujino): Make this pre-submit only once #64212 is fixed
+-      only_if: "changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter/**', 'packages/flutter_test/**', 'packages/flutter_drive/**', 'packages/flutter_localizations/**', 'bin/**') || $CIRRUS_PR == ''"
++      # TODO(fujino): Make this pre-submit only once we have migrated docs generation to LUCI (https://github.com/flutter/flutter/issues/64212).
+       environment:
+-        # TODO(tvolkert): optimize CPU and MEMORY settings once #60646 is resolved.
++        # TODO(tvolkert): optimize CPU and MEMORY settings once docs generation is more efficient (https://github.com/flutter/flutter/issues/60646).
+         CPU: 4
+         MEMORY: 8G
+         # For uploading master docs to Firebase master branch staging site
+@@ -231,21 +172,10 @@
+       script:
+         - rm -rf bin/cache/pkg/tests
+         - git clone https://github.com/flutter/tests.git bin/cache/pkg/tests
+-        - (cd bin/cache/pkg/tests; git checkout f1c35d57db5f0c1dd31ae3e0f73a18891343cd60)
+         - dart --enable-asserts dev/customer_testing/run_tests.dart --skip-on-fetch-failure --skip-template bin/cache/pkg/tests/registry/*.test
+ 
+-    # firebase_test_lab_tests are linux-only
+-    - name: firebase_test_lab_tests-0-linux
+-      <<: *FIREBASE_SHARD_TEMPLATE
+-
+-    - name: firebase_test_lab_tests-1-linux
+-      <<: *FIREBASE_SHARD_TEMPLATE
+-
+-    - name: firebase_test_lab_tests-2_last-linux
+-      <<: *FIREBASE_SHARD_TEMPLATE
+-
+     - name: web_smoke_test
+-      only_if: "changesInclude('.cirrus.yml', 'examples/hello_world/**' ,'dev/**', 'packages/flutter/**', 'packages/flutter_test/**', 'packages/flutter_tools/lib/src/test/**', 'packages/flutter_web_plugins/**', 'bin/**') || $CIRRUS_PR == ''"
++      only_if: "changesInclude('.cirrus.yml', 'examples/hello_world/**' ,'dev/**', 'packages/flutter/**', 'packages/flutter_test/**', 'packages/flutter_tools/lib/src/test/**', 'packages/flutter_web_plugins/**', 'bin/**') && $CIRRUS_PR != ''"
+       environment:
+         # Tests Hello World with Flutter Web Engine using Flutter Driver. Should not need more resources.
+         CPU: 2
+@@ -256,265 +186,8 @@
+         - git clone https://github.com/flutter/web_installers.git
+         - cd web_installers/packages/web_drivers/
+         - pub get
+-        - dart lib/web_driver_installer.dart &
+-        - sleep 20
++        - dart lib/web_driver_installer.dart chromedriver --install-only
+         - chromedriver/chromedriver --port=4444 &
+-        - sleep 5
++        - sleep 1
+         - cd ../../../examples/hello_world/
+         - flutter drive --target=test_driver/smoke_web_engine.dart -d web-server --profile --browser-name=chrome
+-
+-    - name: deploy_gallery-linux # linux- and macos- only
+-      # Do not add more tasks here. Nothing is currently deployed from master branch, so it is safe to run
+-      # even if a test has failed. The behavior of failing dependencies is non-ideal for infra health.
+-      # See also: https://github.com/flutter/flutter/pull/49454
+-      depends_on:
+-        - analyze-linux
+-      environment:
+-        # As of October 2019, 1 CPU and 4G of RAM let deploy_gallery-linux finish in about 15
+-        # minutes, once it got started.
+-        GOOGLE_DEVELOPER_SERVICE_ACCOUNT_ACTOR_FASTLANE: ENCRYPTED[d9ac1462c3c556fc2f8165c9d5566a16497d8ebc38a50357f7f3abf136b7f83e1d1d76dde36fee356cb0f9ebf7a89346]
+-        ANDROID_GALLERY_UPLOAD_KEY: ENCRYPTED[0f2aca35f05b26add5d9edea2a7449341269a2b7e22d5c667f876996e2e8bc44ff1369431ebf73b7c5581fd95d0e5902]
+-      script:
+-        - ./dev/bots/deploy_gallery.sh
+-
+-# WINDOWS SHARDS
+-task:
+-  windows_container:
+-    image: cirrusci/android-sdk:30-windowsservercore-2019
+-    os_version: 2019
+-    cpu: $CPU
+-    memory: $MEMORY
+-  environment:
+-    CPU: 1 # 1-8 without compute credits, 1-30 with
+-    MEMORY: 2G # 256M-24G without compute credits, 256M-90G with
+-    CIRRUS_WORKING_DIR: "C:\\Windows\\Temp\\$FLUTTER_SDK_PATH_WITH_SPACE"
+-    PATH: "$CIRRUS_WORKING_DIR/bin;$CIRRUS_WORKING_DIR/bin/cache/dart-sdk/bin;$PATH"
+-    SHOULD_UPDATE_PACKAGES: "TRUE"
+-  pub_cache:
+-    folder: $APPDATA\Pub\Cache
+-    fingerprint_script:
+-      - ps: $Environment:OS; Get-ChildItem -Path "$Environment:CIRRUS_WORKING_DIR" pubspec.yaml -Recurse | Select-String -Pattern "PUBSPEC CHECKSUM" -SimpleMatch
+-    reupload_on_changes: false
+-  flutter_pkg_cache:
+-    folder: bin\cache\pkg
+-    fingerprint_script: echo %OS% & type bin\internal\*.version
+-    reupload_on_changes: false
+-  artifacts_cache:
+-    folder: bin\cache\artifacts
+-    fingerprint_script: echo %OS% & type bin\internal\*.version
+-    reupload_on_changes: false
+-  setup_script:
+-    - git clean -xffd --exclude=bin/cache/ # git wants forward slash path separators, even on Windows.
+-    - git fetch origin
+-    - git fetch origin master # To set FETCH_HEAD, so that "git merge-base" works.
+-    - flutter config --no-analytics
+-    - flutter doctor -v
+-    - CMD /C IF "%SHOULD_UPDATE_PACKAGES%" EQU "TRUE" flutter update-packages
+-    - git fetch origin master
+-  matrix:
+-    - name: hostonly_devicelab_tests-0-windows
+-      << : *WINDOWS_SHARD_TEMPLATE
+-      environment:
+-        # As of December 2019, the hostonly_devicelab_tests-0-windows shard needs at least 6G RAM to
+-        # succeed. The shard got faster with more CPUs up to 6 CPUs and more RAM up to 8 GB
+-        # (running in about 30 minutes).
+-        CPU: 6
+-        MEMORY: 8G
+-
+-    - name: hostonly_devicelab_tests-1-windows
+-      << : *WINDOWS_SHARD_TEMPLATE
+-      environment:
+-        # As of December 2019, the hostonly_devicelab_tests-1-windows shard requires 4 GB RAM to
+-        # succeed. The optimal configuration was 4 CPUs and 6 GB RAM, running in ~26 minutes.
+-        # Less CPU or RAM ran slower, and more CPU or RAM yielded no extra gain.
+-        CPU: 4
+-        MEMORY: 6G
+-
+-    - name: hostonly_devicelab_tests-2-windows
+-      << : *WINDOWS_SHARD_TEMPLATE
+-      environment:
+-        # As of December 2019, the hostonly_devicelab_tests-2-windows shard required 2 GB RAM to
+-        # succeed. The optimal configuration was 4 CPUs and 8 GB RAM, running in ~33 minutes.
+-        # Less CPU or RAM ran slower, and more CPU or RAM yielded no extra gain.
+-        CPU: 4
+-        MEMORY: 8G
+-
+-    - name: hostonly_devicelab_tests-3_last-windows
+-      << : *WINDOWS_SHARD_TEMPLATE
+-      environment:
+-        # As of December 2019, the hostonly_devicelab_tests-3_last-windows shard required 6 GB RAM
+-        # to succeed. The optimal configuration was 4 CPUs and 6 GB RAM, running in ~43 minutes.
+-        # Less CPU or RAM ran slower, and more CPU or RAM yielded no extra gain.
+-        CPU: 4
+-        MEMORY: 6G
+-
+-    - name: customer_testing-windows
+-      environment:
+-        # As of December 2019, the customer_testing-windows shard got faster with more CPUs up to 4
+-        # CPUs (which requires >=4G RAM), and needed at least 2G of RAM to not run out of memory.
+-        CPU: 4
+-        MEMORY: 4G
+-      script:
+-        - CMD /S /C "IF EXIST "bin\cache\pkg\tests\" RMDIR /S /Q bin\cache\pkg\tests"
+-        - git clone https://github.com/flutter/tests.git bin\cache\pkg\tests
+-        - cd bin\cache\pkg\tests
+-        - git checkout f1c35d57db5f0c1dd31ae3e0f73a18891343cd60
+-        - cd ..\..\..\..
+-        - dart --enable-asserts dev\customer_testing\run_tests.dart --skip-on-fetch-failure --skip-template bin/cache/pkg/tests/registry/*.test
+-
+-# MACOS SHARDS
+-# Mac doesn't use caches because they apparently take longer to populate and save
+-# than just fetching the data in the first place.
+-task:
+-  osx_instance:
+-    image: catalina-xcode-12.0-flutter # see https://cirrus-ci.org/guide/macOS/ for list of images (we should update regularly)
+-    # cpu is always 2
+-    # memory is always 8G
+-  environment:
+-    CIRRUS_WORKING_DIR: "/tmp/$FLUTTER_SDK_PATH_WITH_SPACE"
+-    FLUTTER_FRAMEWORK_DIR: "$CIRRUS_WORKING_DIR/bin/cache/artifacts/engine/ios/"
+-    PATH: "$CIRRUS_WORKING_DIR/bin:$CIRRUS_WORKING_DIR/bin/cache/dart-sdk/bin:$PATH"
+-    COCOAPODS_DISABLE_STATS: true
+-    CPU: 2
+-    MEMORY: 8G
+-    SHOULD_UPDATE_PACKAGES: 'TRUE'
+-  setup_script:
+-    - date
+-    - which flutter
+-    - bundle --version
+-    - bundle config set system 'true'
+-    - sudo bundle install --gemfile=dev/ci/mac/Gemfile
+-    - git clean -xffd --exclude=bin/cache/
+-    - git fetch origin
+-    - git fetch origin master # To set FETCH_HEAD, so that "git merge-base" works.
+-    - flutter config --no-analytics
+-    - if [ "$SHOULD_UPDATE_PACKAGES" == TRUE ]; then flutter update-packages; fi
+-    - flutter doctor -v
+-    - date
+-    - which flutter
+-  on_failure:
+-    failure_script:
+-      - date
+-      - which flutter
+-  matrix:
+-    - name: framework_tests-widgets-macos
+-      only_if: "changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter/**', 'packages/flutter_test/**', 'packages/flutter_tools/lib/src/test/**', 'bin/**') || $CIRRUS_PR == ''"
+-      environment:
+-        GOLDCTL: "$CIRRUS_WORKING_DIR/depot_tools/goldctl"
+-        GOLD_SERVICE_ACCOUNT: ENCRYPTED[3afeea5ac7201151c3d0dc9648862f0462b5e4f55dc600ca8b692319622f7c3eda3d577b1b16cc2ef0311b7314c1c095]
+-      script:
+-        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976
+-        - ./dev/bots/download_goldctl.sh
+-        - dart --enable-asserts dev/bots/test.dart
+-
+-    - name: framework_tests-libraries-macos
+-      only_if: "changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter/**', 'packages/flutter_test/**', 'packages/flutter_tools/lib/src/test/**', 'bin/**') || $CIRRUS_PR == ''"
+-      environment:
+-        GOLDCTL: "$CIRRUS_WORKING_DIR/depot_tools/goldctl"
+-        GOLD_SERVICE_ACCOUNT: ENCRYPTED[3afeea5ac7201151c3d0dc9648862f0462b5e4f55dc600ca8b692319622f7c3eda3d577b1b16cc2ef0311b7314c1c095]
+-      script:
+-        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976
+-        - ./dev/bots/download_goldctl.sh
+-        - dart --enable-asserts dev/bots/test.dart
+-
+-    - name: framework_tests-misc-macos
+-      # this includes the tests for directories in dev/
+-      only_if: "changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter/**', 'packages/flutter_goldens/**', 'packages/flutter_goldens_client/**', 'packages/flutter_test/**', 'packages/flutter_tools/lib/src/test/**', 'bin/**') || $CIRRUS_PR == ''"
+-      script:
+-        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976
+-        - dart --enable-asserts dev/bots/test.dart
+-
+-    - name: tool_tests-general-macos
+-      only_if: "changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter_tools/**', 'bin/**') || $CIRRUS_PR == ''"
+-      environment:
+-        SHOULD_UPDATE_PACKAGES: 'FALSE'
+-      script:
+-        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976
+-        - (cd packages/flutter_tools; pub get)
+-        - (cd packages/flutter_tools/test/data/asset_test/main; pub get)
+-        - (cd packages/flutter_tools/test/data/asset_test/font; pub get)
+-        - (cd dev/bots; pub get)
+-        - dart --enable-asserts ./dev/bots/test.dart
+-
+-    - name: tool_tests-commands-macos
+-      only_if: "changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter_tools/**', 'bin/**') || $CIRRUS_PR == ''"
+-      environment:
+-        SHOULD_UPDATE_PACKAGES: 'FALSE'
+-      script:
+-        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976
+-        - (cd packages/flutter_tools; pub get)
+-        - (cd dev/bots; pub get)
+-        - dart --enable-asserts ./dev/bots/test.dart
+-
+-    - name: tool_tests-integration-macos
+-      only_if: "changesInclude('.cirrus.yml', 'dev/**', 'packages/flutter_tools/**', 'bin/**') || $CIRRUS_PR == ''"
+-      environment:
+-        SHOULD_UPDATE_PACKAGES: 'FALSE'
+-      script:
+-        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976
+-        - (cd packages/flutter_tools; pub get)
+-        - (cd dev/bots; pub get)
+-        - (cd dev/tools; pub get)
+-        - dart --enable-asserts ./dev/bots/test.dart
+-
+-    # TODO(ianh): Enable Web tests on macOS.
+-
+-    - name: build_tests-0-macos
+-      only_if: "changesInclude('.cirrus.yml', 'dev/**', 'bin/**') || $CIRRUS_PR == ''" # https://github.com/flutter/flutter/issues/41940
+-      script:
+-        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976
+-        - dart --enable-asserts ./dev/bots/test.dart
+-
+-    - name: build_tests-1_last-macos
+-      only_if: "changesInclude('.cirrus.yml', 'dev/**', 'bin/**') || $CIRRUS_PR == ''" # https://github.com/flutter/flutter/issues/41940
+-      script:
+-        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976
+-        - dart --enable-asserts ./dev/bots/test.dart
+-
+-    - name: hostonly_devicelab_tests-0-macos
+-      << : *MACOS_SHARD_TEMPLATE
+-
+-    - name: hostonly_devicelab_tests-1-macos
+-      << : *MACOS_SHARD_TEMPLATE
+-
+-    - name: hostonly_devicelab_tests-2-macos
+-      << : *MACOS_SHARD_TEMPLATE
+-
+-    - name: hostonly_devicelab_tests-3_last-macos
+-      << : *MACOS_SHARD_TEMPLATE
+-
+-    - name: customer_testing-macos
+-      script:
+-        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976
+-        - rm -rf bin/cache/pkg/tests
+-        - git clone https://github.com/flutter/tests.git bin/cache/pkg/tests
+-        - (cd bin/cache/pkg/tests; git checkout f1c35d57db5f0c1dd31ae3e0f73a18891343cd60)
+-        - dart --enable-asserts dev/customer_testing/run_tests.dart --skip-on-fetch-failure --skip-template bin/cache/pkg/tests/registry/*.test
+-
+-    - name: deploy_gallery-macos # linux- and macos- only
+-      # Do not add more tasks here. Nothing is currently deployed from master branch, so it is safe to run
+-      # even if a test has failed. The behavior of failing dependencies is non-ideal for infra health.
+-      # See also: https://github.com/flutter/flutter/pull/49454
+-      depends_on:
+-        - analyze-linux
+-      environment:
+-        # Apple Fastlane password.
+-        FASTLANE_PASSWORD: ENCRYPTED[4b1f0b8d52874e9de965acd46c79743f3b81f3a513614179b9be7cf53dc8258753e257bdadb11a298ee455259df21865]
+-        # Private repo for publishing certificates.
+-        PUBLISHING_MATCH_CERTIFICATE_REPO: ENCRYPTED[3c0e78877d933fc80107aa6f3790fd1cf927250b852d6cb53202be696b4903ed8ca839b809626aaf18050bf7e436fab7]
+-        PUBLISHING_MATCH_REPO_TOKEN: ENCRYPTED[3d1230b744c6ed6c788a91bec741b769401dbcd426b18f9af8080bfeefdfc21913ca4047980c5b5b7ce823f12e7b6b19]
+-        # Apple Certificates Match Passphrase
+-        MATCH_PASSWORD: ENCRYPTED[db07f252234397090e3ec59152d9ec1831f5ecd0ef97d247b1dca757bbb9ef9b7c832a39bce2caf1949ccdf097e59a73]
+-      script:
+-        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976
+-        - ./dev/bots/deploy_gallery.sh
+-
+-    - name: verify_binaries_codesigned-macos # macos-only
+-      # TODO(fujino): remove this `only_if` after https://github.com/flutter/flutter/issues/44372
+-      # Only run pre/post submit for release branches
+-      only_if: "$CIRRUS_BASE_BRANCH == 'dev' || $CIRRUS_BRANCH == 'dev' || $CIRRUS_BASE_BRANCH == 'beta' || $CIRRUS_BRANCH == 'beta' || $CIRRUS_BASE_BRANCH == 'stable' || $CIRRUS_BRANCH == 'stable'"
+-      depends_on:
+-        - analyze-linux
+-      script:
+-        - ulimit -S -n 2048 # https://github.com/flutter/flutter/issues/2976
+-        - dart --enable-asserts ./dev/bots/codesign.dart
+Index: ../Downloads/cmps-284-prj1.ahf26/cmps-284-prj1.ahf26/file1.txt
+===================================================================
+--- ../Downloads/cmps-284-prj1.ahf26/cmps-284-prj1.ahf26/file1.txt	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../Downloads/cmps-284-prj1.ahf26/cmps-284-prj1.ahf26/file1.txt	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,4 +0,0 @@
+-Ali Farhat
+-201702766
+-ahf26
+-File1 containing data to send to client from server
+\ No newline at end of file
+Index: ../FYP/app/src/main/res/layout/signin_signup_layout.xml
+===================================================================
+--- ../FYP/app/src/main/res/layout/signin_signup_layout.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP/app/src/main/res/layout/signin_signup_layout.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,6 +0,0 @@
+-<?xml version="1.0" encoding="utf-8"?>
+-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+-    android:layout_width="match_parent"
+-    android:layout_height="match_parent">
+-
+-</LinearLayout>
+\ No newline at end of file
+Index: ../FYP2/app/src/main/res/layout/signup.xml
+===================================================================
+--- ../FYP2/app/src/main/res/layout/signup.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP2/app/src/main/res/layout/signup.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,161 +0,0 @@
+-<?xml version="1.0" encoding="utf-8"?>
+-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+-    xmlns:app="http://schemas.android.com/apk/res-auto"
+-    android:layout_width="match_parent"
+-    android:layout_height="match_parent">
+-
+-    <Button
+-        android:id="@+id/button"
+-        android:layout_width="wrap_content"
+-        android:layout_height="wrap_content"
+-        android:layout_constraintTop_toBottomOf="@+id/TextPassword"
+-        android:layout_constraintStart_toStartOf="parent"
+-        android:layout_marginStart="188dp"
+-        android:layout_marginTop="240dp"
+-        android:text="@string/sign_up"
+-        app:layout_constraintBottom_toTopOf="parent"
+-        app:layout_constraintEnd_toStartOf="parent"
+-        app:layout_constraintStart_toStartOf="parent"
+-        app:layout_constraintTop_toTopOf="parent" />
+-
+-    <EditText
+-        android:id="@+id/TextPassword"
+-        android:layout_width="420dp"
+-        android:layout_height="41dp"
+-        android:layout_constraintStart_toStartOf="parent"
+-        android:layout_editor_absoluteY="622dp"
+-        android:layout_marginStart="16dp"
+-        android:layout_marginTop="16dp"
+-        android:layout_marginEnd="16dp"
+-        android:layout_marginBottom="16dp"
+-        android:autofillHints=""
+-        android:ems="10"
+-        android:hint="@string/password"
+-        android:ignore="MissingConstraints"
+-        android:importantForAutofill="no"
+-        android:inputType="textPassword"
+-        app:layout_constraintBottom_toBottomOf="parent"
+-        app:layout_constraintEnd_toEndOf="parent"
+-        app:layout_constraintStart_toStartOf="parent"
+-        app:layout_constraintTop_toTopOf="parent"
+-        app:layout_constraintVertical_bias="1.0" />
+-
+-    <EditText
+-        android:id="@+id/TextUsername"
+-        android:layout_width="388dp"
+-        android:layout_height="wrap_content"
+-        android:layout_editor_absoluteX="32dp"
+-        android:layout_editor_absoluteY="31dp"
+-        android:ems="10"
+-        android:hint="@string/username"
+-        android:ignore="MissingConstraints"
+-        android:inputType="textPersonName"
+-        app:layout_constraintBottom_toTopOf="parent"
+-        app:layout_constraintEnd_toStartOf="parent"
+-        app:layout_constraintStart_toStartOf="parent"
+-        app:layout_constraintTop_toTopOf="parent" />
+-
+-    <EditText
+-        android:id="@+id/TextFirstName"
+-        android:layout_width="388dp"
+-        android:layout_height="44dp"
+-        android:layout_editor_absoluteX="32dp"
+-        android:layout_editor_absoluteY="106dp"
+-        android:ems="10"
+-        android:hint="FirstName"
+-        android:ignore="MissingConstraints"
+-        android:inputType="textPersonName"
+-        app:layout_constraintBottom_toTopOf="parent"
+-        app:layout_constraintEnd_toStartOf="parent"
+-        app:layout_constraintStart_toStartOf="parent"
+-        app:layout_constraintTop_toTopOf="parent" />
+-
+-    <EditText
+-        android:id="@+id/TextLastName"
+-        android:layout_width="392dp"
+-        android:layout_height="43dp"
+-        android:layout_editor_absoluteX="32dp"
+-        android:layout_editor_absoluteY="172dp"
+-        android:ems="10"
+-        android:hint="LastName"
+-        android:ignore="MissingConstraints"
+-        android:inputType="textPersonName"
+-        app:layout_constraintBottom_toTopOf="parent"
+-        app:layout_constraintEnd_toStartOf="parent"
+-        app:layout_constraintStart_toStartOf="parent"
+-        app:layout_constraintTop_toTopOf="parent" />
+-
+-    <EditText
+-        android:id="@+id/TextPhoneNumber"
+-        android:layout_width="397dp"
+-        android:layout_height="47dp"
+-        android:layout_editor_absoluteX="32dp"
+-        android:layout_editor_absoluteY="243dp"
+-        android:ems="10"
+-        android:hint="PhoneNumber"
+-        android:ignore="MissingConstraints"
+-        android:inputType="textPersonName"
+-        app:layout_constraintBottom_toTopOf="parent"
+-        app:layout_constraintEnd_toStartOf="parent"
+-        app:layout_constraintStart_toStartOf="parent"
+-        app:layout_constraintTop_toTopOf="parent" />
+-
+-    <EditText
+-        android:id="@+id/TextAddress"
+-        android:layout_width="390dp"
+-        android:layout_height="46dp"
+-        android:layout_editor_absoluteX="30dp"
+-        android:layout_editor_absoluteY="320dp"
+-        android:ems="10"
+-        android:hint="Address"
+-        android:ignore="MissingConstraints"
+-        android:inputType="textPersonName"
+-        app:layout_constraintBottom_toTopOf="parent"
+-        app:layout_constraintEnd_toStartOf="parent"
+-        app:layout_constraintStart_toStartOf="parent"
+-        app:layout_constraintTop_toTopOf="parent" />
+-
+-    <EditText
+-        android:id="@+id/TextEmail"
+-        android:layout_width="390dp"
+-        android:layout_height="wrap_content"
+-        android:layout_editor_absoluteX="30dp"
+-        android:layout_editor_absoluteY="402dp"
+-        android:ems="10"
+-        android:hint="Email"
+-        android:ignore="MissingConstraints"
+-        android:inputType="textPersonName"
+-        app:layout_constraintBottom_toTopOf="parent"
+-        app:layout_constraintEnd_toStartOf="parent"
+-        app:layout_constraintStart_toStartOf="parent"
+-        app:layout_constraintTop_toTopOf="parent" />
+-
+-    <EditText
+-        android:id="@+id/TextUserId"
+-        android:layout_width="389dp"
+-        android:layout_height="wrap_content"
+-        android:layout_editor_absoluteX="30dp"
+-        android:layout_editor_absoluteY="485dp"
+-        android:ems="10"
+-        android:hint="UserId"
+-        android:ignore="MissingConstraints"
+-        android:inputType="textPersonName"
+-        app:layout_constraintBottom_toTopOf="parent"
+-        app:layout_constraintEnd_toStartOf="parent"
+-        app:layout_constraintStart_toStartOf="parent"
+-        app:layout_constraintTop_toTopOf="parent" />
+-
+-    <Spinner
+-        android:id="@+id/SpinnerSex"
+-        android:layout_width="393dp"
+-        android:layout_height="wrap_content"
+-        android:layout_editor_absoluteX="32dp"
+-        android:layout_editor_absoluteY="566dp"
+-        android:entries="@array/sex"
+-        android:ignore="MissingConstraints"
+-        app:layout_constraintBottom_toTopOf="parent"
+-        app:layout_constraintEnd_toStartOf="parent"
+-        app:layout_constraintStart_toStartOf="parent"
+-        app:layout_constraintTop_toTopOf="parent" />
+-
+-</androidx.constraintlayout.widget.ConstraintLayout>
+\ No newline at end of file
+Index: ../FYP/app/src/main/res/layout/football_layout.xml
+===================================================================
+--- ../FYP/app/src/main/res/layout/football_layout.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP/app/src/main/res/layout/football_layout.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,6 +0,0 @@
+-<?xml version="1.0" encoding="utf-8"?>
+-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+-    android:layout_width="match_parent"
+-    android:layout_height="match_parent">
+-
+-</LinearLayout>
+\ No newline at end of file
+Index: ../CONTRIBUTING.md
+===================================================================
+--- ../CONTRIBUTING.md	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../CONTRIBUTING.md	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,102 +0,0 @@
+-Contributing to Flutter
+-=======================
+-
+-[![Build Status](https://api.cirrus-ci.com/github/flutter/flutter.svg)](https://cirrus-ci.org/flutter/flutter)
+-
+-_See also: [Flutter's code of conduct](CODE_OF_CONDUCT.md)_
+-
+-Welcome
+--------
+-
+-We invite you to join our team! Everyone is welcome to contribute code
+-via pull requests, to file issues on GitHub, to help people asking for
+-help on our mailing lists, our chat channels, or on Stack Overflow, to
+-help triage, reproduce, or fix bugs that people have filed, to add to our
+-documentation, or to help out in any other way.
+-
+-We grant commit access (which includes full rights to the issue
+-database, such as being able to edit labels) to people who have gained
+-our trust and demonstrated a commitment to Flutter. For more details
+-see the [Contributor access](https://github.com/flutter/flutter/wiki/Contributor-access)
+-page on our wiki.
+-
+-We communicate primarily over GitHub and on [chat channels](https://github.com/flutter/flutter/wiki/Chat).
+-
+-Helping out in the issue database
+----------------------------------
+-
+-If you want to help us triage, you are very welcome to do so!
+-
+-1. Join the #hackers-triage [chat](https://github.com/flutter/flutter/wiki/Chat) channel.
+-
+-2. Read [our code of conduct](CODE_OF_CONDUCT.md), which stipulates explicitly
+-   that everyone must be gracious, respectful, and professional. If you're helping out
+-   with triage, you are representing the Flutter team, and so you want to make sure to
+-   make a good impression!
+-
+-3. Help out as described in our wiki: https://github.com/flutter/flutter/wiki/Triage
+-   You won't be able to add labels at first, so instead start by trying to
+-   do the other steps, e.g. trying to reproduce the problem and asking for people to
+-   provide enough details that you can reproduce the problem, pointing out duplicates,
+-   and so on. Chat on the #hackers-triage channel to let us know what you're up to!
+-
+-4. Familiarize yourself with our
+-   [issue hygiene](https://github.com/flutter/flutter/wiki/Issue-hygiene) wiki page,
+-   which covers the meanings of some important GitHub labels and
+-   milestones.
+-
+-5. Once you've been doing this for a while, someone will invite you to the flutter-hackers
+-   team on GitHub and you'll be able to add labels too. See the
+-   [contributor access](https://github.com/flutter/flutter/wiki/Contributor-access) wiki
+-   page for details.
+-
+-Developing for Flutter
+-----------------------
+-
+-To develop for Flutter, you will eventually need to become familiar
+-with our processes and conventions. This section lists the documents
+-that describe these methodologies. The following list is ordered: you
+-are strongly recommended to go through these documents in the order
+-presented.
+-
+-1. [Our code of conduct](CODE_OF_CONDUCT.md), which stipulates explicitly
+-   that everyone must be gracious, respectful, and professional. This
+-   also documents our conflict resolution policy and encourages people
+-   to ask questions.
+-
+-2. [Values](https://github.com/flutter/flutter/wiki/Values),
+-   which talks about what we care most about.
+-
+-3. [Setting up your engine development environment](https://github.com/flutter/flutter/wiki/Setting-up-the-Engine-development-environment),
+-   which describes the steps you need to configure your computer to
+-   work on Flutter's engine. If you only want to write code for the
+-   Flutter framework, you can skip this step. Flutter's engine mainly
+-   uses C++, Java, and Objective-C.
+-
+-4. [Setting up your framework development environment](https://github.com/flutter/flutter/wiki/Setting-up-the-Framework-development-environment),
+-   which describes the steps you need to configure your computer to
+-   work on Flutter's framework. Flutter's framework mainly uses Dart.
+-
+-5. [Tree hygiene](https://github.com/flutter/flutter/wiki/Tree-hygiene),
+-   which covers how to land a PR, how to do code review, how to
+-   handle breaking changes, how to handle regressions, and how to
+-   handle post-commit test failures.
+-
+-6. [Issue hygiene](https://github.com/flutter/flutter/wiki/Issue-hygiene),
+-   which covers our processes around triaging bugs, escalating high
+-   priority bugs, assigning bugs, and our GitHub labels and
+-   milestones.
+-
+-7. [Our style guide](https://github.com/flutter/flutter/wiki/Style-guide-for-Flutter-repo),
+-   which includes advice for designing APIs for Flutter, and how to
+-   format code in the framework.
+-
+-8. [Flutter design doc template](https://flutter.dev/go/template),
+-   which should be used when proposing a new technical design.  This is a good
+-   practice to do before coding more intricate changes.
+-
+-In addition to the above, there are many pages on [our
+-Wiki](https://github.com/flutter/flutter/wiki/) and an article [Contributing to Flutter:
+-Getting Started](https://medium.com/@ayushbherwani/contributing-to-flutter-getting-started-a0db68cbcd5b)
+-on Medium that may be of interest. For a curated list of pages see the sidebar
+-on the wiki's home page. They are more or less listed in order of importance.
+Index: ../CODE_OF_CONDUCT.md
+===================================================================
+--- ../CODE_OF_CONDUCT.md	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../CODE_OF_CONDUCT.md	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,49 +0,0 @@
+-# Code of conduct
+-
+-We expect Flutter's contributors to act professionally and respectfully, and
+-we expect our social spaces to be safe and dignified environments.
+-
+-Specifically:
+-
+-* Respect people, their identities, their culture, and their work.
+-* Be kind. Be courteous. Be welcoming.
+-* Listen. Consider and acknowledge people's points before responding.
+-
+-Should you experience anything that makes you feel unwelcome in Flutter's
+-community, please contact [conduct@flutter.dev](mailto:conduct@flutter.dev)
+-or, if you prefer, directly contact someone on the team, for instance
+-[Hixie](mailto:ian@hixie.ch) or [Tim](mailto:timsneath@google.com). We will
+-not tolerate harassment from anyone in Flutter's community, even outside
+-of Flutter's public communication channels.
+-
+-## Conflict resolution
+-
+-When multiple contributors disagree on the direction for a particular
+-patch or the general direction of the project, the conflict should be
+-resolved by communication. The people who disagree should get
+-together, try to understand each other's points of view, and work to
+-find a design that addresses everyone's concerns.
+-
+-This is usually sufficient to resolve issues. If you cannot come to an
+-agreement, ask for the advice of a more senior member of the team.
+-
+-Be wary of agreement by attrition, where one person argues a point
+-repeatedly until other participants give up in the interests of moving
+-on. This is not conflict resolution, as it does not address everyone's
+-concerns. Be wary of agreement by compromise, where two good competing
+-solutions are merged into one mediocre solution. A conflict is
+-addressed when the participants agree that the final solution is
+-_better_ than all the conflicting proposals. Sometimes the solution is
+-more work than either of the proposals. [Embrace the yak
+-shave](https://github.com/flutter/flutter/wiki/Style-guide-for-Flutter-repo#lazy-programming).
+-
+-## Questions
+-
+-It's always ok to ask questions. Our systems are large, and nobody will be
+-an expert in all the systems. Once you find the answer, document it in
+-the first place you looked. That way, the next person will be brought
+-up to speed even quicker.
+-
+-!["I try not to make fun of people for admitting they don't know things, because for each thing 'everyone knows' by the time they're adults, every day there are, on average, 10,000 people in the US hearing about it for the first time. If I make fun of people, I train them not to tell me when they have those moments. And I miss out on the fun." "Diet coke and mentos thing? What's that?" "Oh, man! We're going to the grocery store." "Why?" "You're one of today's lucky 10,000."](https://imgs.xkcd.com/comics/ten_thousand.png)
+-
+-Source: _[xkcd, May 2012](https://xkcd.com/1053/)_
+Index: ../MyApplication/app/src/main/res/layout/settings_activity.xml
+===================================================================
+--- ../MyApplication/app/src/main/res/layout/settings_activity.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../MyApplication/app/src/main/res/layout/settings_activity.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,9 +0,0 @@
+-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+-    android:layout_width="match_parent"
+-    android:layout_height="match_parent">
+-
+-    <FrameLayout
+-        android:id="@+id/settings"
+-        android:layout_width="match_parent"
+-        android:layout_height="match_parent" />
+-</LinearLayout>
+\ No newline at end of file
+Index: ../MyApplication/app/src/main/res/xml/root_preferences.xml
+===================================================================
+--- ../MyApplication/app/src/main/res/xml/root_preferences.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../MyApplication/app/src/main/res/xml/root_preferences.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,35 +0,0 @@
+-<PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
+-
+-    <PreferenceCategory app:title="@string/messages_header">
+-
+-        <EditTextPreference
+-            app:key="signature"
+-            app:title="@string/signature_title"
+-            app:useSimpleSummaryProvider="true" />
+-
+-        <ListPreference
+-            app:defaultValue="reply"
+-            app:entries="@array/reply_entries"
+-            app:entryValues="@array/reply_values"
+-            app:key="reply"
+-            app:title="@string/reply_title"
+-            app:useSimpleSummaryProvider="true" />
+-
+-    </PreferenceCategory>
+-
+-    <PreferenceCategory app:title="@string/sync_header">
+-
+-        <SwitchPreferenceCompat
+-            app:key="sync"
+-            app:title="@string/sync_title" />
+-
+-        <SwitchPreferenceCompat
+-            app:dependency="sync"
+-            app:key="attachment"
+-            app:summaryOff="@string/attachment_summary_off"
+-            app:summaryOn="@string/attachment_summary_on"
+-            app:title="@string/attachment_title" />
+-
+-    </PreferenceCategory>
+-
+-</PreferenceScreen>
+\ No newline at end of file
+Index: ../dartdoc_options.yaml
+===================================================================
+--- ../dartdoc_options.yaml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../dartdoc_options.yaml	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,35 +0,0 @@
+-# This file is used by dartdoc when generating API documentation for Flutter.
+-dartdoc:
+-  # Before you can run dartdoc, the snippets tool needs to have a snapshot built.
+-  # The dev/tools/dartdoc.dart script does this automatically.
+-  tools:
+-    snippet:
+-      command: ["dev/snippets/lib/main.dart", "--type=snippet"]
+-      description: "Creates sample code documentation output from embedded documentation samples."
+-    sample:
+-      command: ["dev/snippets/lib/main.dart", "--type=sample"]
+-      description: "Creates full application sample code documentation output from embedded documentation samples."
+-    dartpad:
+-      command: ["dev/snippets/lib/main.dart", "--type=sample", "--dartpad"]
+-      description: "Creates full application sample code documentation output from embedded documentation samples and displays it in an embedded DartPad."
+-  errors:
+-    # Default errors of dartdoc:
+-    - duplicate-file
+-    - invalid-parameter
+-    - tool-error
+-    - unresolved-export
+-    # Warnings that are elevated to errors:
+-    - ambiguous-doc-reference
+-    - ambiguous-reexport
+-    - broken-link
+-    - category-order-gives-missing-package-name
+-    - ignored-canonical-for
+-    - missing-from-search-index
+-    - no-canonical-found
+-    - no-library-level-docs
+-    - not-implemented
+-    - orphaned-file
+-    - reexported-private-api-across-packages
+-    - unknown-file
+-    - unknown-macro
+-    - unresolved-doc-reference
+Index: ../analysis_options.yaml
+===================================================================
+--- ../analysis_options.yaml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../analysis_options.yaml	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,211 +0,0 @@
+-# Specify analysis options.
+-#
+-# Until there are meta linter rules, each desired lint must be explicitly enabled.
+-# See: https://github.com/dart-lang/linter/issues/288
+-#
+-# For a list of lints, see: http://dart-lang.github.io/linter/lints/
+-# See the configuration guide for more
+-# https://github.com/dart-lang/sdk/tree/master/pkg/analyzer#configuring-the-analyzer
+-#
+-# There are other similar analysis options files in the flutter repos,
+-# which should be kept in sync with this file:
+-#
+-#   - analysis_options.yaml (this file)
+-#   - packages/flutter/lib/analysis_options_user.yaml
+-#   - https://github.com/flutter/plugins/blob/master/analysis_options.yaml
+-#   - https://github.com/flutter/engine/blob/master/analysis_options.yaml
+-#
+-# This file contains the analysis options used by Flutter tools, such as IntelliJ,
+-# Android Studio, and the `flutter analyze` command.
+-
+-analyzer:
+-  strong-mode:
+-    implicit-casts: false
+-    implicit-dynamic: false
+-  errors:
+-    # treat missing required parameters as a warning (not a hint)
+-    missing_required_param: warning
+-    # treat missing returns as a warning (not a hint)
+-    missing_return: warning
+-    # allow having TODOs in the code
+-    todo: ignore
+-    # allow self-reference to deprecated members (we do this because otherwise we have
+-    # to annotate every member in every test, assert, etc, when we deprecate something)
+-    deprecated_member_use_from_same_package: ignore
+-    # Ignore analyzer hints for updating pubspecs when using Future or
+-    # Stream and not importing dart:async
+-    # Please see https://github.com/flutter/flutter/pull/24528 for details.
+-    sdk_version_async_exported_from_core: ignore
+-  exclude:
+-    - "bin/cache/**"
+-    # the following two are relative to the stocks example and the flutter package respectively
+-    # see https://github.com/dart-lang/sdk/issues/28463
+-    - "lib/i18n/messages_*.dart"
+-    - "lib/src/http/**"
+-
+-linter:
+-  rules:
+-    # these rules are documented on and in the same order as
+-    # the Dart Lint rules page to make maintenance easier
+-    # https://github.com/dart-lang/linter/blob/master/example/all.yaml
+-    - always_declare_return_types
+-    - always_put_control_body_on_new_line
+-    # - always_put_required_named_parameters_first # we prefer having parameters in the same order as fields https://github.com/flutter/flutter/issues/10219
+-    - always_require_non_null_named_parameters
+-    - always_specify_types
+-    - annotate_overrides
+-    # - avoid_annotating_with_dynamic # conflicts with always_specify_types
+-    # - avoid_as # required for implicit-casts: true
+-    - avoid_bool_literals_in_conditional_expressions
+-    # - avoid_catches_without_on_clauses # we do this commonly
+-    # - avoid_catching_errors # we do this commonly
+-    - avoid_classes_with_only_static_members
+-    # - avoid_double_and_int_checks # only useful when targeting JS runtime
+-    - avoid_empty_else
+-    - avoid_equals_and_hash_code_on_mutable_classes
+-    - avoid_field_initializers_in_const_classes
+-    - avoid_function_literals_in_foreach_calls
+-    # - avoid_implementing_value_types # not yet tested
+-    - avoid_init_to_null
+-    # - avoid_js_rounded_ints # only useful when targeting JS runtime
+-    - avoid_null_checks_in_equality_operators
+-    # - avoid_positional_boolean_parameters # not yet tested
+-    # - avoid_print # not yet tested
+-    # - avoid_private_typedef_functions # we prefer having typedef (discussion in https://github.com/flutter/flutter/pull/16356)
+-    # - avoid_redundant_argument_values # not yet tested
+-    - avoid_relative_lib_imports
+-    - avoid_renaming_method_parameters
+-    - avoid_return_types_on_setters
+-    # - avoid_returning_null # there are plenty of valid reasons to return null
+-    # - avoid_returning_null_for_future # not yet tested
+-    - avoid_returning_null_for_void
+-    # - avoid_returning_this # there are plenty of valid reasons to return this
+-    # - avoid_setters_without_getters # not yet tested
+-    # - avoid_shadowing_type_parameters # not yet tested
+-    - avoid_single_cascade_in_expression_statements
+-    - avoid_slow_async_io
+-    - avoid_types_as_parameter_names
+-    # - avoid_types_on_closure_parameters # conflicts with always_specify_types
+-    # - avoid_unnecessary_containers # not yet tested
+-    - avoid_unused_constructor_parameters
+-    - avoid_void_async
+-    # - avoid_web_libraries_in_flutter # not yet tested
+-    - await_only_futures
+-    - camel_case_extensions
+-    - camel_case_types
+-    - cancel_subscriptions
+-    # - cascade_invocations # not yet tested
+-    # - close_sinks # not reliable enough
+-    # - comment_references # blocked on https://github.com/flutter/flutter/issues/20765
+-    # - constant_identifier_names # needs an opt-out https://github.com/dart-lang/linter/issues/204
+-    - control_flow_in_finally
+-    # - curly_braces_in_flow_control_structures # not yet tested
+-    # - diagnostic_describe_all_properties # not yet tested
+-    - directives_ordering
+-    - empty_catches
+-    - empty_constructor_bodies
+-    - empty_statements
+-    # - file_names # not yet tested
+-    - flutter_style_todos
+-    - hash_and_equals
+-    - implementation_imports
+-    # - invariant_booleans # too many false positives: https://github.com/dart-lang/linter/issues/811
+-    - iterable_contains_unrelated_type
+-    # - join_return_with_assignment # not yet tested
+-    - library_names
+-    - library_prefixes
+-    # - lines_longer_than_80_chars # not yet tested
+-    - list_remove_unrelated_type
+-    # - literal_only_boolean_expressions # too many false positives: https://github.com/dart-lang/sdk/issues/34181
+-    # - missing_whitespace_between_adjacent_strings # not yet tested
+-    - no_adjacent_strings_in_list
+-    - no_duplicate_case_values
+-    # - no_logic_in_create_state # not yet tested
+-    # - no_runtimeType_toString # not yet tested
+-    - non_constant_identifier_names
+-    # - null_closures  # not yet tested
+-    # - omit_local_variable_types # opposite of always_specify_types
+-    # - one_member_abstracts # too many false positives
+-    # - only_throw_errors # https://github.com/flutter/flutter/issues/5792
+-    - overridden_fields
+-    - package_api_docs
+-    - package_names
+-    - package_prefixed_library_names
+-    # - parameter_assignments # we do this commonly
+-    - prefer_adjacent_string_concatenation
+-    - prefer_asserts_in_initializer_lists
+-    # - prefer_asserts_with_message # not yet tested
+-    - prefer_collection_literals
+-    - prefer_conditional_assignment
+-    - prefer_const_constructors
+-    - prefer_const_constructors_in_immutables
+-    - prefer_const_declarations
+-    - prefer_const_literals_to_create_immutables
+-    # - prefer_constructors_over_static_methods # not yet tested
+-    - prefer_contains
+-    # - prefer_double_quotes # opposite of prefer_single_quotes
+-    - prefer_equal_for_default_values
+-    # - prefer_expression_function_bodies # conflicts with https://github.com/flutter/flutter/wiki/Style-guide-for-Flutter-repo#consider-using--for-short-functions-and-methods
+-    - prefer_final_fields
+-    - prefer_final_in_for_each
+-    - prefer_final_locals
+-    - prefer_for_elements_to_map_fromIterable
+-    - prefer_foreach
+-    # - prefer_function_declarations_over_variables # not yet tested
+-    - prefer_generic_function_type_aliases
+-    - prefer_if_elements_to_conditional_expressions
+-    - prefer_if_null_operators
+-    - prefer_initializing_formals
+-    - prefer_inlined_adds
+-    # - prefer_int_literals # not yet tested
+-    # - prefer_interpolation_to_compose_strings # not yet tested
+-    - prefer_is_empty
+-    - prefer_is_not_empty
+-    - prefer_is_not_operator
+-    - prefer_iterable_whereType
+-    # - prefer_mixin # https://github.com/dart-lang/language/issues/32
+-    # - prefer_null_aware_operators # disable until NNBD, see https://github.com/flutter/flutter/pull/32711#issuecomment-492930932
+-    # - prefer_relative_imports # not yet tested
+-    - prefer_single_quotes
+-    - prefer_spread_collections
+-    - prefer_typing_uninitialized_variables
+-    - prefer_void_to_null
+-    # - provide_deprecation_message # not yet tested
+-    # - public_member_api_docs # enabled on a case-by-case basis; see e.g. packages/analysis_options.yaml
+-    - recursive_getters
+-    - slash_for_doc_comments
+-    # - sort_child_properties_last # not yet tested
+-    - sort_constructors_first
+-    - sort_pub_dependencies
+-    - sort_unnamed_constructors_first
+-    - test_types_in_equals
+-    - throw_in_finally
+-    # - type_annotate_public_apis # subset of always_specify_types
+-    - type_init_formals
+-    # - unawaited_futures # too many false positives
+-    # - unnecessary_await_in_return # not yet tested
+-    - unnecessary_brace_in_string_interps
+-    - unnecessary_const
+-    # - unnecessary_final # conflicts with prefer_final_locals
+-    - unnecessary_getters_setters
+-    # - unnecessary_lambdas # has false positives: https://github.com/dart-lang/linter/issues/498
+-    - unnecessary_new
+-    - unnecessary_null_aware_assignments
+-    - unnecessary_null_in_if_null_operators
+-    - unnecessary_overrides
+-    - unnecessary_parenthesis
+-    - unnecessary_statements
+-    - unnecessary_string_interpolations
+-    - unnecessary_this
+-    - unrelated_type_equality_checks
+-    # - unsafe_html # not yet tested
+-    - use_full_hex_values_for_flutter_colors
+-    # - use_function_type_syntax_for_parameters # not yet tested
+-    # - use_key_in_widget_constructors # not yet tested
+-    - use_late_for_private_fields_and_variables
+-    - use_rethrow_when_possible
+-    # - use_setters_to_change_properties # not yet tested
+-    # - use_string_buffers # has false positives: https://github.com/dart-lang/sdk/issues/34182
+-    # - use_to_and_as_if_applicable # has false positives, so we prefer to catch this by code-review
+-    - valid_regexps
+-    - void_checks
+Index: ../FYP/app/src/main/res/layout/choose_your_sport_layout.xml
+===================================================================
+--- ../FYP/app/src/main/res/layout/choose_your_sport_layout.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP/app/src/main/res/layout/choose_your_sport_layout.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,6 +0,0 @@
+-<?xml version="1.0" encoding="utf-8"?>
+-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+-    android:layout_width="match_parent"
+-    android:layout_height="match_parent">
+-
+-</LinearLayout>
+\ No newline at end of file
+Index: ../MyApplication/app/src/main/java/lb/edu/aub/myapplication/SettingsActivity.java
+===================================================================
+--- ../MyApplication/app/src/main/java/lb/edu/aub/myapplication/SettingsActivity.java	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../MyApplication/app/src/main/java/lb/edu/aub/myapplication/SettingsActivity.java	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,33 +0,0 @@
+-package lb.edu.aub.myapplication;
+-
+-import android.os.Bundle;
+-
+-import androidx.appcompat.app.ActionBar;
+-import androidx.appcompat.app.AppCompatActivity;
+-import androidx.preference.PreferenceFragmentCompat;
+-
+-public class SettingsActivity extends AppCompatActivity {
+-
+-    @Override
+-    protected void onCreate(Bundle savedInstanceState) {
+-        super.onCreate(savedInstanceState);
+-        setContentView(R.layout.settings_activity);
+-        if (savedInstanceState == null) {
+-            getSupportFragmentManager()
+-                    .beginTransaction()
+-                    .replace(R.id.settings, new SettingsFragment())
+-                    .commit();
+-        }
+-        ActionBar actionBar = getSupportActionBar();
+-        if (actionBar != null) {
+-            actionBar.setDisplayHomeAsUpEnabled(true);
+-        }
+-    }
+-
+-    public static class SettingsFragment extends PreferenceFragmentCompat {
+-        @Override
+-        public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
+-            setPreferencesFromResource(R.xml.root_preferences, rootKey);
+-        }
+-    }
+-}
+\ No newline at end of file
+Index: ../Downloads/cmps-284-prj1.ahf26/cmps-284-prj1.ahf26/README.txt
+===================================================================
+--- ../Downloads/cmps-284-prj1.ahf26/cmps-284-prj1.ahf26/README.txt	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../Downloads/cmps-284-prj1.ahf26/cmps-284-prj1.ahf26/README.txt	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,10 +0,0 @@
+-Ali Farhat
+-201702766
+-ahf26
+-README, that describes how to run and test your programs
+-
+-Open the project in PyCharm
+-Run each code on two different local terminals
+-Test the commands: bye change get help put
+-Filename: file1.txt
+-When done type bye in server terminal to terminate the session
+Index: ../.codecov.yml
+===================================================================
+--- ../.codecov.yml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../.codecov.yml	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,17 +0,0 @@
+-# https://docs.codecov.io/docs/commit-status
+-coverage:
+-  status:
+-    project:
+-      default:
+-        # basic
+-        target: 0%
+-        threshold: 0%
+-        base: 0%
+-        # advanced
+-        branches: null
+-        if_no_uploads: error
+-        if_not_found: success
+-        if_ci_failed: error
+-        only_pulls: false
+-        flags: null
+-        paths: null
+Index: ../flutter_console.bat
+===================================================================
+--- ../flutter_console.bat	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../flutter_console.bat	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,38 +0,0 @@
+-@ECHO off
+-REM Copyright 2014 The Flutter Authors. All rights reserved.
+-REM Use of this source code is governed by a BSD-style license that can be
+-REM found in the LICENSE file.
+-
+-TITLE Flutter Console
+-
+-echo.
+-echo         ######## ##       ##     ## ######## ######## ######## ########
+-echo         ##       ##       ##     ##    ##       ##    ##       ##     ##
+-echo         ##       ##       ##     ##    ##       ##    ##       ##     ##
+-echo         ######   ##       ##     ##    ##       ##    ######   ########
+-echo         ##       ##       ##     ##    ##       ##    ##       ##   ##
+-echo         ##       ##       ##     ##    ##       ##    ##       ##    ##
+-echo         ##       ########  #######     ##       ##    ######## ##     ##
+-echo.
+-echo.
+-
+-echo  WELCOME to the Flutter Console.
+-echo  ===============================================================================
+-echo.
+-echo  Use the console below this message to interact with the "flutter" command.
+-echo  Run "flutter doctor" to check if your system is ready to run Flutter apps.
+-echo  Run "flutter create <app_name>" to create a new Flutter project.
+-echo.
+-echo  Run "flutter help" to see all available commands.
+-echo.
+-echo  Want to use an IDE to interact with Flutter? https://flutter.dev/ide-setup/
+-echo.
+-echo  Want to run the "flutter" command from any Command Prompt or PowerShell window?
+-echo  Add Flutter to your PATH: https://flutter.dev/setup-windows/#update-your-path
+-echo.
+-echo  ===============================================================================
+-
+-REM "%~dp0" is the directory of this file including trailing backslash
+-SET PATH=%~dp0bin;%PATH%
+-
+-CALL cmd /K "@echo off & cd %USERPROFILE% & echo on"
+Index: ../MyApplication/app/src/main/res/values/arrays.xml
+===================================================================
+--- ../MyApplication/app/src/main/res/values/arrays.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../MyApplication/app/src/main/res/values/arrays.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
+@@ -1,12 +0,0 @@
+-<resources>
+-    <!-- Reply Preference -->
+-    <string-array name="reply_entries">
+-        <item>Reply</item>
+-        <item>Reply to all</item>
+-    </string-array>
+-
+-    <string-array name="reply_values">
+-        <item>reply</item>
+-        <item>reply_all</item>
+-    </string-array>
+-</resources>
+\ No newline at end of file
+Index: ../FYP2/app/src/main/res/layout/login.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+><?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<androidx.constraintlayout.widget.ConstraintLayout xmlns:android=\"http://schemas.android.com/apk/res/android\"\r\n    xmlns:app=\"http://schemas.android.com/apk/res-auto\"\r\n    xmlns:tools=\"http://schemas.android.com/tools\"\r\n    android:id=\"@+id/TextPassword\"\r\n    android:layout_width=\"match_parent\"\r\n    android:layout_height=\"match_parent\">\r\n\r\n    <EditText\r\n        android:id=\"@+id/TextUsername\"\r\n        android:layout_width=\"351dp\"\r\n        android:layout_height=\"52dp\"\r\n        android:layout_marginStart=\"16dp\"\r\n        android:layout_marginBottom=\"66dp\"\r\n        android:ems=\"10\"\r\n        android:hint=\"@string/username\"\r\n        android:inputType=\"textPersonName\"\r\n        app:layout_constraintBottom_toTopOf=\"@+id/TextPassword\"\r\n        app:layout_constraintStart_toStartOf=\"parent\" />\r\n\r\n    <Button\r\n        android:id=\"@+id/ButttonSignIn\"\r\n        android:layout_width=\"wrap_content\"\r\n        android:layout_height=\"wrap_content\"\r\n        android:text=\"Sign In\"\r\n        tools:layout_editor_absoluteX=\"144dp\"\r\n        tools:layout_editor_absoluteY=\"293dp\" />\r\n\r\n    <EditText\r\n        android:id=\"@+id/TextPassword\"\r\n        android:layout_width=\"339dp\"\r\n        android:layout_height=\"50dp\"\r\n        android:layout_marginStart=\"23dp\"\r\n        android:layout_marginBottom=\"56dp\"\r\n        android:ems=\"10\"\r\n        android:hint=\"@string/password\"\r\n        android:inputType=\"textPassword\"\r\n        app:layout_constraintBottom_toTopOf=\"@+id/ButttonSignIn\"\r\n        app:layout_constraintStart_toStartOf=\"parent\" />\r\n</androidx.constraintlayout.widget.ConstraintLayout>
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../FYP2/app/src/main/res/layout/login.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP2/app/src/main/res/layout/login.xml	(date 1621523306029)
+@@ -2,39 +2,64 @@
+ <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+     xmlns:app="http://schemas.android.com/apk/res-auto"
+     xmlns:tools="http://schemas.android.com/tools"
+-    android:id="@+id/TextPassword"
+     android:layout_width="match_parent"
+     android:layout_height="match_parent">
+ 
+     <EditText
+         android:id="@+id/TextUsername"
+-        android:layout_width="351dp"
+-        android:layout_height="52dp"
+-        android:layout_marginStart="16dp"
+-        android:layout_marginBottom="66dp"
++        android:layout_width="358dp"
++        android:layout_height="47dp"
+         android:ems="10"
+-        android:hint="@string/username"
+-        android:inputType="textPersonName"
+-        app:layout_constraintBottom_toTopOf="@+id/TextPassword"
+-        app:layout_constraintStart_toStartOf="parent" />
+-
+-    <Button
+-        android:id="@+id/ButttonSignIn"
+-        android:layout_width="wrap_content"
+-        android:layout_height="wrap_content"
+-        android:text="Sign In"
+-        tools:layout_editor_absoluteX="144dp"
+-        tools:layout_editor_absoluteY="293dp" />
++        android:hint="@string/email"
++        android:inputType="textEmailAddress"
++        android:textColorHint="@color/black"
++        app:layout_constraintBottom_toBottomOf="parent"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintHorizontal_bias="0.49"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toTopOf="parent"
++        app:layout_constraintVertical_bias="0.254" />
+ 
+     <EditText
+         android:id="@+id/TextPassword"
+-        android:layout_width="339dp"
+-        android:layout_height="50dp"
+-        android:layout_marginStart="23dp"
+-        android:layout_marginBottom="56dp"
++        android:layout_width="358dp"
++        android:layout_height="47dp"
++        android:layout_marginStart="28dp"
+         android:ems="10"
+         android:hint="@string/password"
+         android:inputType="textPassword"
+-        app:layout_constraintBottom_toTopOf="@+id/ButttonSignIn"
+-        app:layout_constraintStart_toStartOf="parent" />
++        android:textColorHint="@color/black"
++        app:layout_constraintBottom_toBottomOf="parent"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toTopOf="parent"
++        app:layout_constraintVertical_bias="0.39" />
++
++    <Button
++        android:id="@+id/buttonSignIn"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:layout_marginTop="10dp"
++        android:text="@string/sign_in"
++        android:textAllCaps="false"
++        android:textColor="@color/white"
++        app:layout_constraintBottom_toBottomOf="parent"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toTopOf="parent" />
++
++    <Button
++        android:id="@+id/buttonCreateAcct"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:layout_gravity="center"
++        android:text="@string/create_a_new_account"
++        android:textColor="@color/white"
++        android:textSize="20sp"
++        android:textStyle="bold"
++        app:layout_constraintBottom_toBottomOf="parent"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toTopOf="parent"
++        app:layout_constraintVertical_bias="0.606" />
++
+ </androidx.constraintlayout.widget.ConstraintLayout>
+\ No newline at end of file
+Index: ../MyApplication/app/build.gradle
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>plugins {\r\n    id 'com.android.application'\r\n}\r\n\r\nandroid {\r\n    compileSdkVersion 30\r\n\r\n    defaultConfig {\r\n        applicationId \"lb.edu.aub.myapplication\"\r\n        minSdkVersion 17\r\n        targetSdkVersion 30\r\n        versionCode 1\r\n        versionName \"1.0\"\r\n\r\n        testInstrumentationRunner \"androidx.test.runner.AndroidJUnitRunner\"\r\n    }\r\n\r\n    buildTypes {\r\n        release {\r\n            minifyEnabled false\r\n            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'\r\n        }\r\n    }\r\n    compileOptions {\r\n        sourceCompatibility JavaVersion.VERSION_1_8\r\n        targetCompatibility JavaVersion.VERSION_1_8\r\n    }\r\n}\r\n\r\ndependencies {\r\n\r\n    implementation 'androidx.appcompat:appcompat:1.2.0'\r\n    implementation 'com.google.android.material:material:1.2.1'\r\n    implementation 'androidx.preference:preference:1.1.1'\r\n    testImplementation 'junit:junit:4.+'\r\n    androidTestImplementation 'androidx.test.ext:junit:1.1.2'\r\n    androidTestImplementation 'androidx.test.espresso:espresso-core:3.3.0'\r\n}
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../MyApplication/app/build.gradle	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../MyApplication/app/build.gradle	(date 1621458891304)
+@@ -25,13 +25,19 @@
+         sourceCompatibility JavaVersion.VERSION_1_8
+         targetCompatibility JavaVersion.VERSION_1_8
+     }
++    buildFeatures {
++        viewBinding true
++    }
+ }
+ 
+ dependencies {
+ 
+     implementation 'androidx.appcompat:appcompat:1.2.0'
+-    implementation 'com.google.android.material:material:1.2.1'
+-    implementation 'androidx.preference:preference:1.1.1'
++    implementation 'com.google.android.material:material:1.3.0'
++    implementation 'androidx.annotation:annotation:1.2.0'
++    implementation 'androidx.constraintlayout:constraintlayout:2.0.4'
++    implementation 'androidx.lifecycle:lifecycle-livedata-ktx:2.3.1'
++    implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.3.1'
+     testImplementation 'junit:junit:4.+'
+     androidTestImplementation 'androidx.test.ext:junit:1.1.2'
+     androidTestImplementation 'androidx.test.espresso:espresso-core:3.3.0'
+Index: ../FYP2/app/src/main/java/lb/edu/aub/fyp2/MainActivity.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package lb.edu.aub.fyp2;\r\n\r\nimport androidx.appcompat.app.AppCompatActivity;\r\n\r\nimport android.os.Bundle;\r\nimport android.text.TextUtils;\r\nimport android.view.View;\r\nimport android.widget.Button;\r\nimport android.widget.EditText;\r\nimport android.widget.Toast;\r\n\r\nimport com.google.firebase.database.DatabaseReference;\r\nimport com.google.firebase.database.FirebaseDatabase;\r\n\r\npublic class MainActivity extends AppCompatActivity {\r\n\r\n    EditText TextUsername, TextPassword;\r\n    Button buttonSignUp;\r\n\r\n    DatabaseReference databaseUsers;\r\n\r\n    @Override\r\n    protected void onCreate(Bundle savedInstanceState) {\r\n        super.onCreate(savedInstanceState);\r\n        setContentView(R.layout.activity_main);\r\n\r\n        databaseUsers = FirebaseDatabase.getInstance().getReference(\"Users\");\r\n\r\n        TextUsername = (EditText)findViewById(R.id.TextUsername);\r\n        TextPassword = (EditText)findViewById(R.id.TextPassword);\r\n        buttonSignUp = (Button)findViewById(R.id.buttonSignUp);\r\n\r\n        buttonSignUp.setOnClickListener(new View.OnClickListener() {\r\n            @Override\r\n            public void onClick(View v) {\r\n                signUp();\r\n            }\r\n        });\r\n    }\r\n\r\n    private void signIn() {\r\n        String username = TextUsername.getText().toString().trim();\r\n        String password = TextPassword.getText().toString().trim();\r\n    }\r\n        private void signUp() {\r\n        String username = TextUsername.getText().toString().trim();\r\n        String password = TextPassword.getText().toString().trim();\r\n        String first_name = TextFirstName.getText().toString().trim();;\r\n        String last_name = TextLastName.getText().toString().trim();\r\n        int phone_number = TextNumber.getText().toString().trim();\r\n        String address = TextAddress.getText().toString().trim();\r\n        String email = TextEmail.getText().toString().trim();\r\n        int user_id = TextUserId.getText().toString().trim();\r\n        int sex = TextSex.getText().toString().trim();\r\n\r\n        if(!TextUtils.isEmpty(username)) {\r\n            String id = databaseUsers.push().getKey();\r\n\r\n            User user = new User(username, first_name, last_name, phone_number, address, email, sex, user_id);\r\n\r\n            databaseUsers.child(id).setValue(user);\r\n\r\n            Toast.makeText(this, \"User added\", Toast.LENGTH_LONG).show();\r\n\r\n        }else{\r\n            Toast.makeText(this, \"You should enter a username\", Toast.LENGTH_LONG).show();\r\n        }\r\n    }\r\n\r\n    private void addUsers() {\r\n        String username;\r\n        String first_name;\r\n        String last_name;\r\n        int phone_number;\r\n        String address;\r\n        String email;\r\n        int user_id;\r\n        int sex;\r\n    }\r\n\r\n}
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../FYP2/app/src/main/java/lb/edu/aub/fyp2/MainActivity.java	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP2/app/src/main/java/lb/edu/aub/fyp2/MainActivity.java	(date 1621614129169)
+@@ -2,11 +2,13 @@
+ 
+ import androidx.appcompat.app.AppCompatActivity;
+ 
++import android.content.Intent;
+ import android.os.Bundle;
+ import android.text.TextUtils;
+ import android.view.View;
+ import android.widget.Button;
+ import android.widget.EditText;
++import android.widget.ImageButton;
+ import android.widget.Toast;
+ 
+ import com.google.firebase.database.DatabaseReference;
+@@ -14,8 +16,10 @@
+ 
+ public class MainActivity extends AppCompatActivity {
+ 
+-    EditText TextUsername, TextPassword;
+-    Button buttonSignUp;
++    EditText TextUsername, TextPassword, TextFirstName, TextLastName, TextAddress, TextEmail;
++    Button buttonLogin, buttonSignIn, buttonSignUp, buttonCreateAcct, buttonFootball, buttonBasketball, buttonTennis;
++    ImageButton ImageButtonHooligans, ImageButtonFairPlay, ImageButtonHoops;
++    int TextNumber, TextUserId, TextSex;
+ 
+     DatabaseReference databaseUsers;
+ 
+@@ -26,49 +30,135 @@
+ 
+         databaseUsers = FirebaseDatabase.getInstance().getReference("Users");
+ 
+-        TextUsername = (EditText)findViewById(R.id.TextUsername);
+-        TextPassword = (EditText)findViewById(R.id.TextPassword);
+-        buttonSignUp = (Button)findViewById(R.id.buttonSignUp);
++        TextUsername = (EditText) findViewById(R.id.TextUsername);
++        TextPassword = (EditText) findViewById(R.id.TextPassword);
++        buttonLogin = (Button) findViewById(R.id.buttonLogin);
++        buttonSignIn = (Button) findViewById(R.id.buttonSignIn);
++        buttonCreateAcct = (Button) findViewById(R.id.buttonCreateAcct);
++        buttonSignUp = (Button) findViewById(R.id.buttonSignUp);
++        buttonFootball = (Button) findViewById(R.id.buttonFootball);
++        buttonBasketball = (Button) findViewById(R.id.buttonBasketball);
++        buttonTennis = (Button) findViewById(R.id.buttonTennis);
++        ImageButtonHooligans = (ImageButton) findViewById(R.id.ImageButtonHooligans);
++        ImageButtonFairPlay = (ImageButton) findViewById(R.id.ImageButtonFairPlay);
++        ImageButtonHoops = (ImageButton) findViewById(R.id.ImageButtonHoops);
++
++        buttonLogin.setOnClickListener(new View.OnClickListener() {
++            @Override
++            public void onClick(View v) {
++                Intent intent = new Intent(MainActivity.this, login.class);
++                startActivity(intent);
++            }
++        });
++
++        buttonSignIn.setOnClickListener(new View.OnClickListener() {
++            @Override
++            public void onClick(View v) {
++                Intent intent = new Intent(MainActivity.this, sign_in.class);
++                startActivity(intent);
++            }
++        });
++
++        buttonCreateAcct.setOnClickListener(new View.OnClickListener() {
++            @Override
++            public void onClick(View v) {
++                Intent intent = new Intent(MainActivity.this, createAcct.class);
++                startActivity(intent);
++            }
++        });
+ 
+         buttonSignUp.setOnClickListener(new View.OnClickListener() {
+             @Override
+             public void onClick(View v) {
+-                signUp();
++                Intent intent = new Intent(MainActivity.this, sign_up.class);
++                startActivity(intent);
++            }
++        });
++
++        buttonFootball.setOnClickListener(new View.OnClickListener() {
++            @Override
++            public void onClick(View v) {
++                Intent intent = new Intent(MainActivity.this, football.class);
++                startActivity(intent);
++            }
++        });
++
++        buttonBasketball.setOnClickListener(new View.OnClickListener() {
++            @Override
++            public void onClick(View v) {
++                Intent intent = new Intent(MainActivity.this, basketball.class);
++                startActivity(intent);
++            }
++        });
++
++        buttonTennis.setOnClickListener(new View.OnClickListener() {
++            @Override
++            public void onClick(View v) {
++                Intent intent = new Intent(MainActivity.this, tennis.class);
++                startActivity(intent);
++            }
++        });
++
++        ImageButtonHooligans.setOnClickListener(new View.OnClickListener() {
++            @Override
++            public void onClick(View v) {
++                Intent intent = new Intent(MainActivity.this, image_button_hooligans.class);
++                startActivity(intent);
++            }
++        });
++
++        ImageButtonFairPlay.setOnClickListener(new View.OnClickListener() {
++            @Override
++            public void onClick(View v) {
++                Intent intent = new Intent(MainActivity.this, image_button_fairplay.class);
++                startActivity(intent);
+             }
+         });
+-    }
++
++        ImageButtonHoops.setOnClickListener(new View.OnClickListener() {
++            @Override
++            public void onClick(View v) {
++                Intent intent = new Intent(MainActivity.this, image_button_hoops.class);
++                startActivity(intent);
++            }
++        });
+ 
+-    private void signIn() {
++
++    }
++
++    private void login() {
+         String username = TextUsername.getText().toString().trim();
+         String password = TextPassword.getText().toString().trim();
+     }
+-        private void signUp() {
++
++    private void signUp() {
+         String username = TextUsername.getText().toString().trim();
+         String password = TextPassword.getText().toString().trim();
+         String first_name = TextFirstName.getText().toString().trim();;
+         String last_name = TextLastName.getText().toString().trim();
+-        int phone_number = TextNumber.getText().toString().trim();
++        int phone_number = Integer.parseInt(String.valueOf(TextNumber));
+         String address = TextAddress.getText().toString().trim();
+         String email = TextEmail.getText().toString().trim();
+-        int user_id = TextUserId.getText().toString().trim();
+-        int sex = TextSex.getText().toString().trim();
++        int user_id = Integer.parseInt(String.valueOf(TextUserId));
++        int sex = Integer.parseInt(String.valueOf(TextSex));
+ 
+         if(!TextUtils.isEmpty(username)) {
+             String id = databaseUsers.push().getKey();
+ 
+-            User user = new User(username, first_name, last_name, phone_number, address, email, sex, user_id);
++            User user = new User(username, password, first_name, last_name, phone_number, address, email, sex, user_id);
+ 
+             databaseUsers.child(id).setValue(user);
+ 
+             Toast.makeText(this, "User added", Toast.LENGTH_LONG).show();
+ 
+         }else{
+-            Toast.makeText(this, "You should enter a username", Toast.LENGTH_LONG).show();
++            Toast.makeText(this, "You should fill all information correctly", Toast.LENGTH_LONG).show();
+         }
+     }
+ 
+     private void addUsers() {
+         String username;
++        String password;
+         String first_name;
+         String last_name;
+         int phone_number;
+Index: ../FYP2/app/src/main/res/values/strings.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+><resources>\r\n    <string name=\"app_name\">FYP2</string>\r\n    <string name=\"sign_up\">Sign up</string>\r\n    <string name=\"password\">Password</string>\r\n    <string name=\"username\">Username</string>\r\n\r\n    <array name = \"sex\">\r\n        <item>Male</item>\r\n        <item>Female</item>\r\n    </array>\r\n\r\n</resources>
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../FYP2/app/src/main/res/values/strings.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP2/app/src/main/res/values/strings.xml	(date 1621469340128)
+@@ -3,10 +3,55 @@
+     <string name="sign_up">Sign up</string>
+     <string name="password">Password</string>
+     <string name="username">Username</string>
+-
+-    <array name = "sex">
++    <string name="email">Email</string>
++    <string name="log_in">Log In</string>
++    <string name="create_a_new_account">Create a new Account!</string>
++    <string name="sign_in_sign_up">Sign In / Sign Up</string>
++    <string name="choose_field">Please choose from the fields below or Select an area</string>
++    <string name="area">Area</string>
++    <string name="an_area">an area:</string>
++    <string name="football">Football</string>
++    <string name="basketball">Basketball</string>
++    <string name="tennis">Tennis</string>
++    <string name="choose_your_sport">Choose your sport:</string>
++    <array name="sex">
+         <item>Male</item>
+         <item>Female</item>
+     </array>
++    <string name="title_activity_login">LoginActivity</string>
++    <string name="prompt_email">Email</string>
++    <string name="prompt_password">Password</string>
++    <string name="action_sign_in">Sign in or register</string>
++    <string name="action_sign_in_short">Sign in</string>
++    <string name="welcome">"Welcome !"</string>
++    <string name="invalid_username">Not a valid username</string>
++    <string name="invalid_password">Password must be >5 characters</string>
++    <string name="login_failed">"Login failed"</string>
++    <string name="first_name">First Name</string>
++    <string name="last_name">Last Name</string>
++    <string name="phone_number">Phone Number</string>
++    <string name="address">Address</string>
++    <string name="id">ID</string>
++    <string name="sex">Sex</string>
++    <string name="hooligans_field_availability">Hooligans Field Availability</string>
++    <string name="football_fields">Football Fields</string>
++    <string name="basketball_fields">Basketball Fields</string>
++    <string name="tennis_fields">Tennis Fields</string>
++    <string name="_10am_11_30am">10AM-11:30AM</string>
++    <string name="_12pm_1_30pm">12PM - 1:30PM</string>
++    <string name="_2pm_3_30pm">2PM - 3:30PM</string>
++    <string name="_4pm_4_30pm">4PM - 4:30PM</string>
++    <string name="_5pm_6_30pm">5PM - 6:30PM</string>
++    <string name="_7pm_8_30pm">7PM - 8:30PM</string>
++    <string name="_9pm_10_30pm">9PM - 10:30PM</string>
++    <string name="_11pm_12_30pm">11PM-12:30PM</string>
++    <string name="fairplay_field_availability">FairPlay Field Availability</string>
++    <string name="hoops_field_availability">Hoops Field Availability</string>
++    <string name="sign_in">SIGN IN</string>
++    <array name="area">
++        <item> Sin El Fil </item>
++        <item> Hazmieh </item>
++        <item> Zouk Mosbeh </item>
++    </array>
+ 
+ </resources>
+\ No newline at end of file
+Index: ../MyApplication/build.gradle
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>// Top-level build file where you can add configuration options common to all sub-projects/modules.\r\nbuildscript {\r\n    repositories {\r\n        google()\r\n        mavenCentral()\r\n    }\r\n    dependencies {\r\n        classpath \"com.android.tools.build:gradle:4.2.0\"\r\n\r\n        // NOTE: Do not place your application dependencies here; they belong\r\n        // in the individual module build.gradle files\r\n    }\r\n}\r\n\r\nallprojects {\r\n    repositories {\r\n        google()\r\n        mavenCentral()\r\n        jcenter() // Warning: this repository is going to shut down soon\r\n    }\r\n}\r\n\r\ntask clean(type: Delete) {\r\n    delete rootProject.buildDir\r\n}
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../MyApplication/build.gradle	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../MyApplication/build.gradle	(date 1621458888950)
+@@ -5,7 +5,7 @@
+         mavenCentral()
+     }
+     dependencies {
+-        classpath "com.android.tools.build:gradle:4.2.0"
++        classpath "com.android.tools.build:gradle:4.2.1"
+ 
+         // NOTE: Do not place your application dependencies here; they belong
+         // in the individual module build.gradle files
+Index: ../FYP2/app/src/main/java/lb/edu/aub/fyp2/User.java
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package lb.edu.aub.fyp2;\r\n\r\npublic class User {\r\n    String username;\r\n    String first_name;\r\n    String last_name;\r\n    int phone_number;\r\n    String address;\r\n    String email;\r\n    int user_id;\r\n    int sex;\r\n\r\n\r\n    public User(){\r\n\r\n    }\r\n\r\n    public User (String username, String first_name, String last_name, int phone_number, String address, String email, int user_id , int sex) {\r\n        this.username = username;\r\n        this.first_name = first_name;\r\n        this.last_name = last_name;\r\n        this.phone_number = phone_number;\r\n        this.address = address;\r\n        this.email = email;\r\n        this.user_id = user_id;\r\n        this.sex = sex;\r\n    }\r\n\r\n    public String getUsername() {\r\n        return username;\r\n    }\r\n\r\n    public String getFirst_name() {\r\n        return first_name;\r\n    }\r\n\r\n    public String getLast_name() {\r\n        return last_name;\r\n    }\r\n\r\n    public int getPhone_number() {\r\n        return phone_number;\r\n    }\r\n\r\n    public String getAddress() {\r\n        return address;\r\n    }\r\n\r\n    public String getEmail() {\r\n        return email;\r\n    }\r\n\r\n    public int getUserID() {\r\n        return user_id;\r\n    }\r\n\r\n    public int getSex() {\r\n        return sex;\r\n    }\r\n}\r\n\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../FYP2/app/src/main/java/lb/edu/aub/fyp2/User.java	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP2/app/src/main/java/lb/edu/aub/fyp2/User.java	(date 1621610895796)
+@@ -2,6 +2,7 @@
+ 
+ public class User {
+     String username;
++    String password;
+     String first_name;
+     String last_name;
+     int phone_number;
+@@ -15,8 +16,9 @@
+ 
+     }
+ 
+-    public User (String username, String first_name, String last_name, int phone_number, String address, String email, int user_id , int sex) {
++    public User (String username, String password, String first_name, String last_name, int phone_number, String address, String email, int user_id , int sex) {
+         this.username = username;
++        this.password = password;
+         this.first_name = first_name;
+         this.last_name = last_name;
+         this.phone_number = phone_number;
+@@ -30,6 +32,10 @@
+         return username;
+     }
+ 
++    public String getPassword() {
++        return password;
++    }
++
+     public String getFirst_name() {
+         return first_name;
+     }
+Index: app/src/main/res/values-night/themes.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+><resources xmlns:tools=\"http://schemas.android.com/tools\">\r\n    <!-- Base application theme. -->\r\n    <style name=\"Theme.MovieMania\" parent=\"Theme.MaterialComponents.DayNight.DarkActionBar\">\r\n        <!-- Primary brand color. -->\r\n        <item name=\"colorPrimary\">@color/purple_200</item>\r\n        <item name=\"colorPrimaryVariant\">@color/purple_700</item>\r\n        <item name=\"colorOnPrimary\">@color/black</item>\r\n        <!-- Secondary brand color. -->\r\n        <item name=\"colorSecondary\">@color/teal_200</item>\r\n        <item name=\"colorSecondaryVariant\">@color/teal_200</item>\r\n        <item name=\"colorOnSecondary\">@color/black</item>\r\n        <!-- Status bar color. -->\r\n        <item name=\"android:statusBarColor\" tools:targetApi=\"l\">?attr/colorPrimaryVariant</item>\r\n        <!-- Customize your theme here. -->\r\n    </style>\r\n</resources>
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- app/src/main/res/values-night/themes.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ app/src/main/res/values-night/themes.xml	(date 1629047771557)
+@@ -2,15 +2,15 @@
+     <!-- Base application theme. -->
+     <style name="Theme.MovieMania" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+         <!-- Primary brand color. -->
+-        <item name="colorPrimary">@color/purple_200</item>
+-        <item name="colorPrimaryVariant">@color/purple_700</item>
+-        <item name="colorOnPrimary">@color/black</item>
++        <item name="colorPrimary">@color/darkPrimaryColor</item>
++        <item name="colorPrimaryVariant">@color/backgroundColor</item>
++        <item name="colorOnPrimary">@color/white</item>
+         <!-- Secondary brand color. -->
+-        <item name="colorSecondary">@color/teal_200</item>
+-        <item name="colorSecondaryVariant">@color/teal_200</item>
+-        <item name="colorOnSecondary">@color/black</item>
++        <item name="colorSecondary">@color/darkPrimaryColor</item>
++        <item name="colorSecondaryVariant">@color/backgroundColor</item>
++        <item name="colorOnSecondary">@color/white</item>
+         <!-- Status bar color. -->
+         <item name="android:statusBarColor" tools:targetApi="l">?attr/colorPrimaryVariant</item>
+         <!-- Customize your theme here. -->
+     </style>
+-</resources>
+\ No newline at end of file
++</resources>
+Index: ../FYP2/app/src/main/AndroidManifest.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+><?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"\r\n    package=\"lb.edu.aub.fyp2\">\r\n\r\n    <application\r\n        android:allowBackup=\"true\"\r\n        android:icon=\"@mipmap/ic_launcher\"\r\n        android:label=\"@string/app_name\"\r\n        android:roundIcon=\"@mipmap/ic_launcher_round\"\r\n        android:supportsRtl=\"true\"\r\n        android:theme=\"@style/Theme.FYP2\">\r\n        <activity android:name=\".MainActivity\">\r\n            <intent-filter>\r\n                <action android:name=\"android.intent.action.MAIN\" />\r\n\r\n                <category android:name=\"android.intent.category.LAUNCHER\" />\r\n            </intent-filter>\r\n        </activity>\r\n    </application>\r\n\r\n</manifest>
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../FYP2/app/src/main/AndroidManifest.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP2/app/src/main/AndroidManifest.xml	(date 1621458893224)
+@@ -9,6 +9,9 @@
+         android:roundIcon="@mipmap/ic_launcher_round"
+         android:supportsRtl="true"
+         android:theme="@style/Theme.FYP2">
++
++        <meta-data android:name="com.google.android.actions" />
++
+         <activity android:name=".MainActivity">
+             <intent-filter>
+                 <action android:name="android.intent.action.MAIN" />
+Index: app/src/main/res/values/themes.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+><resources xmlns:tools=\"http://schemas.android.com/tools\">\r\n    <!-- Base application theme. -->\r\n    <style name=\"Theme.MovieMania\" parent=\"Theme.MaterialComponents.DayNight.DarkActionBar\">\r\n        <!-- Primary brand color. -->\r\n        <item name=\"colorPrimary\">@color/purple_500</item>\r\n        <item name=\"colorPrimaryVariant\">@color/purple_700</item>\r\n        <item name=\"colorOnPrimary\">@color/white</item>\r\n        <!-- Secondary brand color. -->\r\n        <item name=\"colorSecondary\">@color/teal_200</item>\r\n        <item name=\"colorSecondaryVariant\">@color/teal_700</item>\r\n        <item name=\"colorOnSecondary\">@color/black</item>\r\n        <!-- Status bar color. -->\r\n        <item name=\"android:statusBarColor\" tools:targetApi=\"l\">?attr/colorPrimaryVariant</item>\r\n        <!-- Customize your theme here. -->\r\n    </style>\r\n</resources>
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- app/src/main/res/values/themes.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ app/src/main/res/values/themes.xml	(date 1629047716327)
+@@ -2,13 +2,13 @@
+     <!-- Base application theme. -->
+     <style name="Theme.MovieMania" parent="Theme.MaterialComponents.DayNight.DarkActionBar">
+         <!-- Primary brand color. -->
+-        <item name="colorPrimary">@color/purple_500</item>
+-        <item name="colorPrimaryVariant">@color/purple_700</item>
++        <item name="colorPrimary">@color/darkPrimaryColor</item>
++        <item name="colorPrimaryVariant">@color/backgroundColor</item>
+         <item name="colorOnPrimary">@color/white</item>
+         <!-- Secondary brand color. -->
+-        <item name="colorSecondary">@color/teal_200</item>
+-        <item name="colorSecondaryVariant">@color/teal_700</item>
+-        <item name="colorOnSecondary">@color/black</item>
++        <item name="colorSecondary">@color/darkPrimaryColor</item>
++        <item name="colorSecondaryVariant">@color/backgroundColor</item>
++        <item name="colorOnSecondary">@color/white</item>
+         <!-- Status bar color. -->
+         <item name="android:statusBarColor" tools:targetApi="l">?attr/colorPrimaryVariant</item>
+         <!-- Customize your theme here. -->
+Index: ../FYP2/app/src/main/res/layout/activity_main.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+><?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<androidx.constraintlayout.widget.ConstraintLayout xmlns:android=\"http://schemas.android.com/apk/res/android\"\r\n    xmlns:app=\"http://schemas.android.com/apk/res-auto\"\r\n    xmlns:tools=\"http://schemas.android.com/tools\"\r\n    android:layout_width=\"match_parent\"\r\n    android:layout_height=\"match_parent\"\r\n    tools:context=\".MainActivity\">\r\n\r\n    <Button\r\n        android:id=\"@+id/buttonSignUp\"\r\n        android:layout_width=\"wrap_content\"\r\n        android:layout_height=\"wrap_content\"\r\n        android:layout_marginStart=\"188dp\"\r\n        android:layout_marginTop=\"240dp\"\r\n        android:text=\"@string/sign_up\"\r\n        app:layout_constraintStart_toStartOf=\"parent\"\r\n        app:layout_constraintTop_toBottomOf=\"@+id/TextPassword\" />\r\n\r\n    <EditText\r\n        android:id=\"@+id/TextPassword\"\r\n        android:layout_width=\"420dp\"\r\n        android:layout_height=\"41dp\"\r\n        android:layout_marginStart=\"28dp\"\r\n        android:autofillHints=\"\"\r\n        android:ems=\"10\"\r\n        android:hint=\"@string/password\"\r\n        android:importantForAutofill=\"no\"\r\n        android:inputType=\"textPassword\"\r\n        app:layout_constraintStart_toStartOf=\"parent\"\r\n        tools:layout_editor_absoluteY=\"622dp\" />\r\n\r\n    <EditText\r\n        android:id=\"@+id/TextUsername\"\r\n        android:layout_width=\"388dp\"\r\n        android:layout_height=\"wrap_content\"\r\n        android:ems=\"10\"\r\n        android:hint=\"@string/username\"\r\n        android:inputType=\"textPersonName\"\r\n        tools:layout_editor_absoluteX=\"32dp\"\r\n        tools:layout_editor_absoluteY=\"31dp\" />\r\n\r\n    <EditText\r\n        android:id=\"@+id/TextFirstName\"\r\n        android:layout_width=\"388dp\"\r\n        android:layout_height=\"44dp\"\r\n        android:ems=\"10\"\r\n        android:hint=\"FirstName\"\r\n        android:inputType=\"textPersonName\"\r\n        tools:layout_editor_absoluteX=\"32dp\"\r\n        tools:layout_editor_absoluteY=\"106dp\" />\r\n\r\n    <EditText\r\n        android:id=\"@+id/TextLastName\"\r\n        android:layout_width=\"392dp\"\r\n        android:layout_height=\"43dp\"\r\n        android:ems=\"10\"\r\n        android:hint=\"LastName\"\r\n        android:inputType=\"textPersonName\"\r\n        tools:layout_editor_absoluteX=\"32dp\"\r\n        tools:layout_editor_absoluteY=\"172dp\" />\r\n\r\n    <EditText\r\n        android:id=\"@+id/TextPhoneNumber\"\r\n        android:layout_width=\"397dp\"\r\n        android:layout_height=\"47dp\"\r\n        android:ems=\"10\"\r\n        android:hint=\"PhoneNumber\"\r\n        android:inputType=\"textPersonName\"\r\n        tools:layout_editor_absoluteX=\"32dp\"\r\n        tools:layout_editor_absoluteY=\"243dp\" />\r\n\r\n    <EditText\r\n        android:id=\"@+id/TextAddress\"\r\n        android:layout_width=\"390dp\"\r\n        android:layout_height=\"46dp\"\r\n        android:ems=\"10\"\r\n        android:hint=\"Address\"\r\n        android:inputType=\"textPersonName\"\r\n        tools:layout_editor_absoluteX=\"30dp\"\r\n        tools:layout_editor_absoluteY=\"320dp\" />\r\n\r\n    <EditText\r\n        android:id=\"@+id/TextEmail\"\r\n        android:layout_width=\"390dp\"\r\n        android:layout_height=\"wrap_content\"\r\n        android:ems=\"10\"\r\n        android:hint=\"Email\"\r\n        android:inputType=\"textPersonName\"\r\n        tools:layout_editor_absoluteX=\"30dp\"\r\n        tools:layout_editor_absoluteY=\"402dp\" />\r\n\r\n    <EditText\r\n        android:id=\"@+id/TextUserId\"\r\n        android:layout_width=\"389dp\"\r\n        android:layout_height=\"wrap_content\"\r\n        android:ems=\"10\"\r\n        android:hint=\"UserId\"\r\n        android:inputType=\"textPersonName\"\r\n        tools:layout_editor_absoluteX=\"30dp\"\r\n        tools:layout_editor_absoluteY=\"485dp\" />\r\n\r\n    <Spinner\r\n        android:id=\"@+id/SpinnerSex\"\r\n        android:layout_width=\"393dp\"\r\n        android:layout_height=\"wrap_content\"\r\n        android:entries=\"@array/sex\"\r\n        tools:layout_editor_absoluteX=\"32dp\"\r\n        tools:layout_editor_absoluteY=\"566dp\" />\r\n\r\n</androidx.constraintlayout.widget.ConstraintLayout>
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../FYP2/app/src/main/res/layout/activity_main.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP2/app/src/main/res/layout/activity_main.xml	(date 1621458506143)
+@@ -3,108 +3,37 @@
+     xmlns:app="http://schemas.android.com/apk/res-auto"
+     xmlns:tools="http://schemas.android.com/tools"
+     android:layout_width="match_parent"
+-    android:layout_height="match_parent"
+-    tools:context=".MainActivity">
++    android:layout_height="match_parent">
++
++    <ImageView
++        android:id="@+id/imageView"
++        android:layout_width="0dp"
++        android:layout_height="0dp"
++        android:layout_marginBottom="43dp"
++        android:src="@drawable/_my_game"
++        app:layout_constraintBottom_toTopOf="@+id/buttonLogin"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toTopOf="parent"
++        tools:ignore="ContentDescription" />
+ 
+     <Button
+-        android:id="@+id/buttonSignUp"
+-        android:layout_width="wrap_content"
++        android:id="@+id/buttonLogin"
++        android:layout_width="0dp"
+         android:layout_height="wrap_content"
+-        android:layout_marginStart="188dp"
+-        android:layout_marginTop="240dp"
+-        android:text="@string/sign_up"
++        android:layout_gravity="start"
++        android:layout_marginStart="26dp"
++        android:layout_marginEnd="26dp"
++        android:layout_marginBottom="82dp"
++        android:background="@color/background"
++        android:enabled="false"
++        android:text="@string/sign_in_sign_up"
++        android:textColor="@android:color/white"
++        app:layout_constraintBottom_toBottomOf="parent"
++        app:layout_constraintEnd_toEndOf="parent"
+         app:layout_constraintStart_toStartOf="parent"
+-        app:layout_constraintTop_toBottomOf="@+id/TextPassword" />
+-
+-    <EditText
+-        android:id="@+id/TextPassword"
+-        android:layout_width="420dp"
+-        android:layout_height="41dp"
+-        android:layout_marginStart="28dp"
+-        android:autofillHints=""
+-        android:ems="10"
+-        android:hint="@string/password"
+-        android:importantForAutofill="no"
+-        android:inputType="textPassword"
+-        app:layout_constraintStart_toStartOf="parent"
+-        tools:layout_editor_absoluteY="622dp" />
+-
+-    <EditText
+-        android:id="@+id/TextUsername"
+-        android:layout_width="388dp"
+-        android:layout_height="wrap_content"
+-        android:ems="10"
+-        android:hint="@string/username"
+-        android:inputType="textPersonName"
+-        tools:layout_editor_absoluteX="32dp"
+-        tools:layout_editor_absoluteY="31dp" />
+-
+-    <EditText
+-        android:id="@+id/TextFirstName"
+-        android:layout_width="388dp"
+-        android:layout_height="44dp"
+-        android:ems="10"
+-        android:hint="FirstName"
+-        android:inputType="textPersonName"
+-        tools:layout_editor_absoluteX="32dp"
+-        tools:layout_editor_absoluteY="106dp" />
+-
+-    <EditText
+-        android:id="@+id/TextLastName"
+-        android:layout_width="392dp"
+-        android:layout_height="43dp"
+-        android:ems="10"
+-        android:hint="LastName"
+-        android:inputType="textPersonName"
+-        tools:layout_editor_absoluteX="32dp"
+-        tools:layout_editor_absoluteY="172dp" />
+-
+-    <EditText
+-        android:id="@+id/TextPhoneNumber"
+-        android:layout_width="397dp"
+-        android:layout_height="47dp"
+-        android:ems="10"
+-        android:hint="PhoneNumber"
+-        android:inputType="textPersonName"
+-        tools:layout_editor_absoluteX="32dp"
+-        tools:layout_editor_absoluteY="243dp" />
+-
+-    <EditText
+-        android:id="@+id/TextAddress"
+-        android:layout_width="390dp"
+-        android:layout_height="46dp"
+-        android:ems="10"
+-        android:hint="Address"
+-        android:inputType="textPersonName"
+-        tools:layout_editor_absoluteX="30dp"
+-        tools:layout_editor_absoluteY="320dp" />
+-
+-    <EditText
+-        android:id="@+id/TextEmail"
+-        android:layout_width="390dp"
+-        android:layout_height="wrap_content"
+-        android:ems="10"
+-        android:hint="Email"
+-        android:inputType="textPersonName"
+-        tools:layout_editor_absoluteX="30dp"
+-        tools:layout_editor_absoluteY="402dp" />
++        app:layout_constraintTop_toBottomOf="@+id/imageView"
++        tools:ignore="MissingConstraints" />
+ 
+-    <EditText
+-        android:id="@+id/TextUserId"
+-        android:layout_width="389dp"
+-        android:layout_height="wrap_content"
+-        android:ems="10"
+-        android:hint="UserId"
+-        android:inputType="textPersonName"
+-        tools:layout_editor_absoluteX="30dp"
+-        tools:layout_editor_absoluteY="485dp" />
+-
+-    <Spinner
+-        android:id="@+id/SpinnerSex"
+-        android:layout_width="393dp"
+-        android:layout_height="wrap_content"
+-        android:entries="@array/sex"
+-        tools:layout_editor_absoluteX="32dp"
+-        tools:layout_editor_absoluteY="566dp" />
+ 
+ </androidx.constraintlayout.widget.ConstraintLayout>
+\ No newline at end of file
+Index: ../FYP2/build.gradle
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>// Top-level build file where you can add configuration options common to all sub-projects/modules.\r\nbuildscript {\r\n    repositories {\r\n        google()\r\n        jcenter()\r\n    }\r\n    dependencies {\r\n        classpath \"com.android.tools.build:gradle:4.1.3\"\r\n        classpath 'com.google.gms:google-services:4.3.3'\r\n\r\n        // NOTE: Do not place your application dependencies here; they belong\r\n        // in the individual module build.gradle files\r\n    }\r\n}\r\n\r\nallprojects {\r\n    repositories {\r\n        google()\r\n        jcenter()\r\n    }\r\n}\r\n\r\ntask clean(type: Delete) {\r\n    delete rootProject.buildDir\r\n}
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../FYP2/build.gradle	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP2/build.gradle	(date 1620418054812)
+@@ -5,7 +5,7 @@
+         jcenter()
+     }
+     dependencies {
+-        classpath "com.android.tools.build:gradle:4.1.3"
++        classpath 'com.android.tools.build:gradle:4.2.0'
+         classpath 'com.google.gms:google-services:4.3.3'
+ 
+         // NOTE: Do not place your application dependencies here; they belong
+Index: ../FYP2/app/src/main/res/layout/choose_your_sport.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+><?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<androidx.constraintlayout.widget.ConstraintLayout\r\n    xmlns:android=\"http://schemas.android.com/apk/res/android\"\r\n    xmlns:app=\"http://schemas.android.com/apk/res-auto\"\r\n    xmlns:tools=\"http://schemas.android.com/tools\"\r\n    android:layout_width=\"match_parent\"\r\n    android:layout_height=\"match_parent\">\r\n\r\n    <Button\r\n        android:id=\"@+id/buttonFootball\"\r\n        android:layout_width=\"335dp\"\r\n        android:layout_height=\"72dp\"\r\n        android:text=\"Football\"\r\n        app:backgroundTint=\"@color/background\"\r\n        tools:layout_editor_absoluteX=\"25dp\"\r\n        tools:layout_editor_absoluteY=\"155dp\" />\r\n\r\n    <Button\r\n        android:id=\"@+id/button2\"\r\n        android:layout_width=\"335dp\"\r\n        android:layout_height=\"76dp\"\r\n        android:text=\"Basketball\"\r\n        app:backgroundTint=\"@color/background\"\r\n        tools:layout_editor_absoluteX=\"25dp\"\r\n        tools:layout_editor_absoluteY=\"327dp\" />\r\n\r\n    <Button\r\n        android:id=\"@+id/button3\"\r\n        android:layout_width=\"327dp\"\r\n        android:layout_height=\"68dp\"\r\n        android:text=\"Tennis\"\r\n        app:backgroundTint=\"@color/background\"\r\n        tools:layout_editor_absoluteX=\"33dp\"\r\n        tools:layout_editor_absoluteY=\"503dp\" />\r\n\r\n    <TextView\r\n        android:id=\"@+id/textView\"\r\n        android:layout_width=\"405dp\"\r\n        android:layout_height=\"74dp\"\r\n        android:background=\"@color/background\"\r\n        android:text=\"Choose your sport:\"\r\n        android:textColor=\"@color/white\"\r\n        android:textSize=\"75px\"\r\n        tools:layout_editor_absoluteX=\"3dp\"\r\n        tools:layout_editor_absoluteY=\"2dp\" />\r\n</androidx.constraintlayout.widget.ConstraintLayout>
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../FYP2/app/src/main/res/layout/choose_your_sport.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP2/app/src/main/res/layout/choose_your_sport.xml	(date 1621459493698)
+@@ -1,46 +1,66 @@
+ <?xml version="1.0" encoding="utf-8"?>
+-<androidx.constraintlayout.widget.ConstraintLayout
+-    xmlns:android="http://schemas.android.com/apk/res/android"
++<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+     xmlns:app="http://schemas.android.com/apk/res-auto"
+-    xmlns:tools="http://schemas.android.com/tools"
+     android:layout_width="match_parent"
+     android:layout_height="match_parent">
+ 
+     <Button
+         android:id="@+id/buttonFootball"
+-        android:layout_width="335dp"
+-        android:layout_height="72dp"
+-        android:text="Football"
++        android:layout_width="0dp"
++        android:layout_height="0dp"
++        android:layout_marginBottom="100dp"
++        android:text="@string/football"
+         app:backgroundTint="@color/background"
+-        tools:layout_editor_absoluteX="25dp"
+-        tools:layout_editor_absoluteY="155dp" />
++        app:layout_constraintBottom_toTopOf="@+id/buttonBasketball"
++        app:layout_constraintEnd_toEndOf="@+id/buttonBasketball"
++        app:layout_constraintHorizontal_bias="0.0"
++        app:layout_constraintStart_toStartOf="@+id/buttonBasketball"
++        app:layout_constraintTop_toBottomOf="@+id/textView" />
+ 
+     <Button
+-        android:id="@+id/button2"
++        android:id="@+id/buttonBasketball"
+         android:layout_width="335dp"
+-        android:layout_height="76dp"
+-        android:text="Basketball"
++        android:layout_height="0dp"
++        android:layout_marginStart="32dp"
++        android:layout_marginBottom="100dp"
++        android:text="@string/basketball"
+         app:backgroundTint="@color/background"
+-        tools:layout_editor_absoluteX="25dp"
+-        tools:layout_editor_absoluteY="327dp" />
++        app:layout_constraintBottom_toTopOf="@+id/buttonTennis"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toBottomOf="@+id/buttonFootball" />
+ 
+     <Button
+-        android:id="@+id/button3"
+-        android:layout_width="327dp"
+-        android:layout_height="68dp"
+-        android:text="Tennis"
++        android:id="@+id/buttonTennis"
++        android:layout_width="0dp"
++        android:layout_height="0dp"
++        android:layout_marginStart="32dp"
++        android:layout_marginEnd="33dp"
++        android:layout_marginBottom="160dp"
++        android:text="@string/tennis"
+         app:backgroundTint="@color/background"
+-        tools:layout_editor_absoluteX="33dp"
+-        tools:layout_editor_absoluteY="503dp" />
++        app:layout_constraintBottom_toBottomOf="parent"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintHorizontal_bias="0.0"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toBottomOf="@+id/buttonBasketball" />
+ 
+     <TextView
+         android:id="@+id/textView"
+-        android:layout_width="405dp"
+-        android:layout_height="74dp"
++        android:layout_width="0dp"
++        android:layout_height="0dp"
++        android:layout_marginStart="3dp"
++        android:layout_marginTop="2dp"
++        android:layout_marginEnd="3dp"
++        android:layout_marginBottom="79dp"
+         android:background="@color/background"
+-        android:text="Choose your sport:"
++        android:gravity="center"
++        android:textStyle="bold|italic"
++        android:text="@string/choose_your_sport"
+         android:textColor="@color/white"
+-        android:textSize="75px"
+-        tools:layout_editor_absoluteX="3dp"
+-        tools:layout_editor_absoluteY="2dp" />
++        android:textSize="20sp"
++        app:layout_constraintBottom_toTopOf="@+id/buttonFootball"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toTopOf="parent" />
++
+ </androidx.constraintlayout.widget.ConstraintLayout>
+\ No newline at end of file
+Index: ../FYP2/app/src/main/res/layout/football.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+><?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<androidx.constraintlayout.widget.ConstraintLayout\r\n    xmlns:android=\"http://schemas.android.com/apk/res/android\"\r\n    xmlns:tools=\"http://schemas.android.com/tools\"\r\n    android:layout_width=\"match_parent\"\r\n    android:layout_height=\"match_parent\">\r\n\r\n    <EditText\r\n        android:id=\"@+id/editTextTextPersonName\"\r\n        android:layout_width=\"412dp\"\r\n        android:layout_height=\"90dp\"\r\n        android:background=\"@color/background\"\r\n        android:ems=\"10\"\r\n        android:inputType=\"textPersonName\"\r\n        android:text=\"Football\"\r\n        tools:layout_editor_absoluteX=\"4dp\"\r\n        tools:layout_editor_absoluteY=\"4dp\" />\r\n\r\n    <EditText\r\n        android:id=\"@+id/editTextTextPersonName2\"\r\n        android:layout_width=\"406dp\"\r\n        android:layout_height=\"wrap_content\"\r\n        android:ems=\"10\"\r\n        android:inputType=\"textPersonName\"\r\n        android:text=\"Please choose from the fields below or Select\"\r\n        tools:layout_editor_absoluteX=\"4dp\"\r\n        tools:layout_editor_absoluteY=\"94dp\" />\r\n\r\n    <EditText\r\n        android:id=\"@+id/editTextTextPersonName3\"\r\n        android:layout_width=\"wrap_content\"\r\n        android:layout_height=\"wrap_content\"\r\n        android:ems=\"10\"\r\n        android:inputType=\"textPersonName\"\r\n        android:text=\"an area:\"\r\n        tools:layout_editor_absoluteX=\"7dp\"\r\n        tools:layout_editor_absoluteY=\"131dp\" />\r\n\r\n    <Spinner\r\n        android:id=\"@+id/spinnerArea\"\r\n        android:layout_width=\"385dp\"\r\n        android:layout_height=\"wrap_content\"\r\n        android:text=\"Area\"\r\n        tools:layout_editor_absoluteX=\"10dp\"\r\n        tools:layout_editor_absoluteY=\"191dp\" />\r\n\r\n</androidx.constraintlayout.widget.ConstraintLayout>
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../FYP2/app/src/main/res/layout/football.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP2/app/src/main/res/layout/football.xml	(date 1621288831474)
+@@ -1,47 +1,81 @@
+ <?xml version="1.0" encoding="utf-8"?>
+-<androidx.constraintlayout.widget.ConstraintLayout
+-    xmlns:android="http://schemas.android.com/apk/res/android"
+-    xmlns:tools="http://schemas.android.com/tools"
++<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:app="http://schemas.android.com/apk/res-auto"
+     android:layout_width="match_parent"
+     android:layout_height="match_parent">
+ 
+     <EditText
+-        android:id="@+id/editTextTextPersonName"
+-        android:layout_width="412dp"
+-        android:layout_height="90dp"
++        android:id="@+id/TextFootball"
++        android:layout_width="409dp"
++        android:layout_height="103dp"
+         android:background="@color/background"
+         android:ems="10"
+-        android:inputType="textPersonName"
+-        android:text="Football"
+-        tools:layout_editor_absoluteX="4dp"
+-        tools:layout_editor_absoluteY="4dp" />
++        android:gravity="center"
++        android:text="@string/football"
++        android:textColor="@color/black"
++        android:textStyle="bold|italic"
++        app:layout_constraintBottom_toTopOf="@+id/TextChooseFField"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toTopOf="parent" />
+ 
+-    <EditText
+-        android:id="@+id/editTextTextPersonName2"
+-        android:layout_width="406dp"
++    <TextView
++        android:id="@+id/TextChooseFField"
++        android:layout_width="410dp"
+         android:layout_height="wrap_content"
+-        android:ems="10"
+-        android:inputType="textPersonName"
+-        android:text="Please choose from the fields below or Select"
+-        tools:layout_editor_absoluteX="4dp"
+-        tools:layout_editor_absoluteY="94dp" />
+-
+-    <EditText
+-        android:id="@+id/editTextTextPersonName3"
+-        android:layout_width="wrap_content"
+-        android:layout_height="wrap_content"
+-        android:ems="10"
+-        android:inputType="textPersonName"
+-        android:text="an area:"
+-        tools:layout_editor_absoluteX="7dp"
+-        tools:layout_editor_absoluteY="131dp" />
++        android:layout_marginTop="4dp"
++        android:text="@string/choose_field"
++        android:textColor="@color/black"
++        android:textStyle="bold|italic"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintHorizontal_bias="1.0"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toBottomOf="@+id/TextFootball" />
+ 
+     <Spinner
+         android:id="@+id/spinnerArea"
+-        android:layout_width="385dp"
++        android:layout_width="409dp"
+         android:layout_height="wrap_content"
+-        android:text="Area"
+-        tools:layout_editor_absoluteX="10dp"
+-        tools:layout_editor_absoluteY="191dp" />
++        app:layout_constraintBottom_toBottomOf="parent"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintHorizontal_bias="1.0"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toBottomOf="@+id/TextChooseFField"
++        app:layout_constraintVertical_bias="0.0" />
++
++    <ImageButton
++        android:id="@+id/ImageButtonHooligans"
++        android:layout_width="413dp"
++        android:layout_height="135dp"
++        app:layout_constraintBottom_toBottomOf="parent"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintHorizontal_bias="0.047"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toBottomOf="@+id/spinnerArea"
++        app:layout_constraintVertical_bias="0.022"
++        app:srcCompat="@drawable/hooligans" />
++
++    <ImageButton
++        android:id="@+id/ImageButtonHoops"
++        android:layout_width="411dp"
++        android:layout_height="185dp"
++        app:layout_constraintBottom_toBottomOf="parent"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintHorizontal_bias="0.0"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toBottomOf="@+id/ImageButtonHooligans"
++        app:layout_constraintVertical_bias="0.089"
++        app:srcCompat="@drawable/hoops" />
++
++    <ImageView
++        android:id="@+id/ImageButtonFairPlay"
++        android:layout_width="410dp"
++        android:layout_height="152dp"
++        app:layout_constraintBottom_toBottomOf="parent"
++        app:layout_constraintEnd_toEndOf="parent"
++        app:layout_constraintStart_toStartOf="parent"
++        app:layout_constraintTop_toBottomOf="@+id/ImageButtonHoops"
++        app:layout_constraintVertical_bias="0.506"
++        app:srcCompat="@drawable/fairplay" />
+ 
+ </androidx.constraintlayout.widget.ConstraintLayout>
+\ No newline at end of file
+Index: ../.github/ISSUE_TEMPLATE/1_activation.md
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>---\r\nname: I am having difficulty installing Flutter or getting it to work\r\nabout: You have run into problems while downloading or installing Flutter, or the\r\n  \"flutter\" tool is crashing, or you are running into some other issue before even\r\n  being able to use \"flutter run\".\r\ntitle: ''\r\nlabels: ''\r\nassignees: ''\r\n\r\n---\r\n\r\n<!-- Thank you for using Flutter!\r\n\r\n     If you are looking for support, please check out our documentation\r\n     or consider asking a question on Stack Overflow:\r\n      * https://flutter.dev/\r\n      * https://api.flutter.dev/\r\n      * https://stackoverflow.com/questions/tagged/flutter?sort=frequent\r\n\r\n     If you have found a bug or if our documentation doesn't have an answer\r\n     to what you're looking for, then fill out the template below. Please read\r\n     our guide to filing a bug first: https://flutter.dev/docs/resources/bug-reports\r\n-->\r\n\r\n## Steps to Reproduce\r\n\r\n<!-- Please tell us exactly how to reproduce the problem you are running into. -->\r\n\r\n1. ...\r\n2. ...\r\n3. ...\r\n\r\n## Logs\r\n\r\n<!--\r\n      Include the full logs of the commands you are running between the lines\r\n      with the backticks below. If you are running any \"flutter\" commands,\r\n      please include the output of running them with \"--verbose\"; for example,\r\n      the output of running \"flutter --verbose create foo\".\r\n-->\r\n\r\n```\r\n```\r\n\r\n<!-- If possible, paste the output of running `flutter doctor -v` here. -->\r\n\r\n```\r\n```\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../.github/ISSUE_TEMPLATE/1_activation.md	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../.github/ISSUE_TEMPLATE/1_activation.md	(date 1618595621099)
+@@ -32,6 +32,9 @@
+ 
+ ## Logs
+ 
++<details>
++<summary>Logs</summary>
++
+ <!--
+       Include the full logs of the commands you are running between the lines
+       with the backticks below. If you are running any "flutter" commands,
+@@ -46,3 +49,5 @@
+ 
+ ```
+ ```
++
++</details>
+Index: ../FYP2/gradle/wrapper/gradle-wrapper.properties
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>#Thu Apr 29 13:50:07 EEST 2021\r\ndistributionBase=GRADLE_USER_HOME\r\ndistributionPath=wrapper/dists\r\nzipStoreBase=GRADLE_USER_HOME\r\nzipStorePath=wrapper/dists\r\ndistributionUrl=https\\://services.gradle.org/distributions/gradle-6.5-bin.zip\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>windows-1252
+===================================================================
+--- ../FYP2/gradle/wrapper/gradle-wrapper.properties	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP2/gradle/wrapper/gradle-wrapper.properties	(date 1620418054547)
+@@ -3,4 +3,4 @@
+ distributionPath=wrapper/dists
+ zipStoreBase=GRADLE_USER_HOME
+ zipStorePath=wrapper/dists
+-distributionUrl=https\://services.gradle.org/distributions/gradle-6.5-bin.zip
++distributionUrl=https\://services.gradle.org/distributions/gradle-6.7.1-bin.zip
+Index: ../FYP2/app/build.gradle
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>plugins {\r\n    id 'com.android.application'\r\n    id 'com.google.gms.google-services'\r\n}\r\n\r\nandroid {\r\n    compileSdkVersion 30\r\n    buildToolsVersion \"30.0.2\"\r\n\r\n    defaultConfig {\r\n        applicationId \"lb.edu.aub.fyp2\"\r\n        minSdkVersion 17\r\n        targetSdkVersion 30\r\n        versionCode 1\r\n        versionName \"1.0\"\r\n\r\n        testInstrumentationRunner \"androidx.test.runner.AndroidJUnitRunner\"\r\n    }\r\n\r\n    buildTypes {\r\n        release {\r\n            minifyEnabled false\r\n            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'\r\n        }\r\n    }\r\n    compileOptions {\r\n        sourceCompatibility JavaVersion.VERSION_1_8\r\n        targetCompatibility JavaVersion.VERSION_1_8\r\n    }\r\n}\r\n\r\ndependencies {\r\n\r\n    implementation 'androidx.appcompat:appcompat:1.2.0'\r\n    implementation 'com.google.android.material:material:1.3.0'\r\n    implementation 'androidx.constraintlayout:constraintlayout:2.0.4'\r\n    implementation 'com.google.firebase:firebase-database:19.2.1'\r\n    testImplementation 'junit:junit:4.+'\r\n    androidTestImplementation 'androidx.test.ext:junit:1.1.2'\r\n    androidTestImplementation 'androidx.test.espresso:espresso-core:3.3.0'\r\n}
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../FYP2/app/build.gradle	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../FYP2/app/build.gradle	(date 1621164310989)
+@@ -27,6 +27,9 @@
+         sourceCompatibility JavaVersion.VERSION_1_8
+         targetCompatibility JavaVersion.VERSION_1_8
+     }
++    buildFeatures {
++        viewBinding true
++    }
+ }
+ 
+ dependencies {
+@@ -35,6 +38,9 @@
+     implementation 'com.google.android.material:material:1.3.0'
+     implementation 'androidx.constraintlayout:constraintlayout:2.0.4'
+     implementation 'com.google.firebase:firebase-database:19.2.1'
++    implementation 'androidx.annotation:annotation:1.1.0'
++    implementation 'androidx.lifecycle:lifecycle-livedata-ktx:2.2.0'
++    implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.2.0'
+     testImplementation 'junit:junit:4.+'
+     androidTestImplementation 'androidx.test.ext:junit:1.1.2'
+     androidTestImplementation 'androidx.test.espresso:espresso-core:3.3.0'
+Index: ../MyApplication/app/src/main/res/values/strings.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+><resources>\r\n    <string name=\"app_name\">My Application</string>\r\n    <!-- Settings Activity Title -->\r\n    <string name=\"title_activity_settings\">Settings</string>\r\n\r\n    <!-- Preference Titles -->\r\n    <string name=\"messages_header\">Messages</string>\r\n    <string name=\"sync_header\">Sync</string>\r\n\r\n    <!-- Messages Preferences -->\r\n    <string name=\"signature_title\">Your signature</string>\r\n    <string name=\"reply_title\">Default reply action</string>\r\n\r\n    <!-- Sync Preferences -->\r\n    <string name=\"sync_title\">Sync email periodically</string>\r\n    <string name=\"attachment_title\">Download incoming attachments</string>\r\n    <string name=\"attachment_summary_on\">Automatically download attachments for incoming emails\r\n    </string>\r\n    <string name=\"attachment_summary_off\">Only download attachments when manually requested</string>\r\n</resources>
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../MyApplication/app/src/main/res/values/strings.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../MyApplication/app/src/main/res/values/strings.xml	(date 1621458891020)
+@@ -1,20 +1,12 @@
+ <resources>
+     <string name="app_name">My Application</string>
+-    <!-- Settings Activity Title -->
+-    <string name="title_activity_settings">Settings</string>
+-
+-    <!-- Preference Titles -->
+-    <string name="messages_header">Messages</string>
+-    <string name="sync_header">Sync</string>
+-
+-    <!-- Messages Preferences -->
+-    <string name="signature_title">Your signature</string>
+-    <string name="reply_title">Default reply action</string>
+-
+-    <!-- Sync Preferences -->
+-    <string name="sync_title">Sync email periodically</string>
+-    <string name="attachment_title">Download incoming attachments</string>
+-    <string name="attachment_summary_on">Automatically download attachments for incoming emails
+-    </string>
+-    <string name="attachment_summary_off">Only download attachments when manually requested</string>
++    <!-- Strings related to login -->
++    <string name="prompt_email">Email</string>
++    <string name="prompt_password">Password</string>
++    <string name="action_sign_in">Sign in or register</string>
++    <string name="action_sign_in_short">Sign in</string>
++    <string name="welcome">"Welcome !"</string>
++    <string name="invalid_username">Not a valid username</string>
++    <string name="invalid_password">Password must be >5 characters</string>
++    <string name="login_failed">"Login failed"</string>
+ </resources>
+\ No newline at end of file
+Index: ../MyApplication/app/src/main/AndroidManifest.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+><?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"\r\n    package=\"lb.edu.aub.myapplication\">\r\n\r\n    <application\r\n        android:allowBackup=\"true\"\r\n        android:icon=\"@mipmap/ic_launcher\"\r\n        android:label=\"@string/app_name\"\r\n        android:roundIcon=\"@mipmap/ic_launcher_round\"\r\n        android:supportsRtl=\"true\"\r\n        android:theme=\"@style/Theme.MyApplication\">\r\n        <activity\r\n            android:name=\".SettingsActivity\"\r\n            android:label=\"@string/app_name\">\r\n            <intent-filter>\r\n                <action android:name=\"android.intent.action.MAIN\" />\r\n\r\n                <category android:name=\"android.intent.category.LAUNCHER\" />\r\n            </intent-filter>\r\n        </activity>\r\n    </application>\r\n\r\n</manifest>
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- ../MyApplication/app/src/main/AndroidManifest.xml	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../MyApplication/app/src/main/AndroidManifest.xml	(date 1621458891337)
+@@ -10,7 +10,7 @@
+         android:supportsRtl="true"
+         android:theme="@style/Theme.MyApplication">
+         <activity
+-            android:name=".SettingsActivity"
++            android:name=".ui.login.LoginActivity"
+             android:label="@string/app_name">
+             <intent-filter>
+                 <action android:name="android.intent.action.MAIN" />
+Index: ../MyApplication/gradle/wrapper/gradle-wrapper.properties
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>#Mon May 17 11:42:45 EEST 2021\r\ndistributionBase=GRADLE_USER_HOME\r\ndistributionUrl=https\\://services.gradle.org/distributions/gradle-6.7.1-bin.zip\r\ndistributionPath=wrapper/dists\r\nzipStorePath=wrapper/dists\r\nzipStoreBase=GRADLE_USER_HOME\r\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>windows-1252
+===================================================================
+--- ../MyApplication/gradle/wrapper/gradle-wrapper.properties	(revision c8bc93453331d4adc75385bfde490414313dc634)
++++ ../MyApplication/gradle/wrapper/gradle-wrapper.properties	(date 1621458891915)
+@@ -1,4 +1,4 @@
+-#Mon May 17 11:42:45 EEST 2021
++#Thu May 20 00:14:51 EEST 2021
+ distributionBase=GRADLE_USER_HOME
+ distributionUrl=https\://services.gradle.org/distributions/gradle-6.7.1-bin.zip
+ distributionPath=wrapper/dists
